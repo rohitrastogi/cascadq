@@ -134,9 +134,7 @@ async def finish(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        await broker.finish(
-            name, body.task_id, body.sequence, body.idempotency_key,
-        )
+        await broker.finish(name, body.task_id, body.sequence)
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)

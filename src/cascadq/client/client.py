@@ -152,18 +152,11 @@ class CascadqClient:
         queue_name: str,
         task_id: str,
         sequence: int,
-        idempotency_key: str | None = None,
     ) -> None:
-        body: dict[str, Any] = {
-            "task_id": task_id,
-            "sequence": sequence,
-        }
-        if idempotency_key is not None:
-            body["idempotency_key"] = idempotency_key
         await self._request(
             "POST",
             f"/queues/{queue_name}/finish",
-            json=body,
+            json={"task_id": task_id, "sequence": sequence},
             expected_status=204,
             error_map=_TASK_ERROR_MAP,
         )
@@ -247,7 +240,6 @@ class ClaimedTask:
         self._heartbeat_interval = _heartbeat_interval
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._finished = False
-        self._finish_idempotency_key: str | None = None
 
     async def __aenter__(self) -> ClaimedTask:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -267,14 +259,11 @@ class ClaimedTask:
         """Mark the task as completed."""
         if self._finished:
             return
-        if self._finish_idempotency_key is None:
-            self._finish_idempotency_key = uuid4().hex
         await self._stop_heartbeat()
         await self._client._finish(
             self._queue_name,
             self.task_id,
             self.sequence,
-            self._finish_idempotency_key,
         )
         self._finished = True
 
