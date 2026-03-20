@@ -1,6 +1,7 @@
 """Tests for HTTP server routes via in-process ASGI client."""
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -121,3 +122,47 @@ class TestPayloadValidation:
         await client.post("/queues", json={"name": "q"})
         resp = await client.post("/queues/q/push", json={"wrong_field": 1})
         assert resp.status_code == 422
+
+
+class TestStoreLifecycle:
+    async def test_store_lifecycle_is_entered_and_exited(
+        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+    ) -> None:
+        """The store_lifecycle context manager is managed by the app lifespan."""
+        entered = False
+        exited = False
+
+        @asynccontextmanager
+        async def fake_lifecycle():
+            nonlocal entered, exited
+            entered = True
+            yield
+            exited = True
+
+        lifecycle = fake_lifecycle()
+        broker = Broker(store=memory_store, config=test_config)
+        app = create_app(
+            store=memory_store,
+            config=test_config,
+            store_lifecycle=lifecycle,
+        )
+        # Manually run the lifespan to verify the context manager
+        # is entered/exited (ASGITransport doesn't trigger lifespan).
+        async with app.router.lifespan_context(app):
+            assert entered
+            assert app.state.broker is not None
+
+        assert exited
+        await broker.stop()
+
+
+class TestErrorCodes:
+    async def test_error_response_includes_code_field(
+        self, client: AsyncClient
+    ) -> None:
+        """Error responses should include a 'code' field for disambiguation."""
+        resp = await client.delete("/queues/nonexistent")
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["code"] == "queue_not_found"
+        assert "error" in body

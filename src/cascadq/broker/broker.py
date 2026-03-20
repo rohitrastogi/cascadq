@@ -68,9 +68,13 @@ class Broker:
             host=socket.gethostname(),
             started_at=self._clock(),
         )
-        await self._store.write_new(
-            f"{self._prefix}broker.json", serialize_broker_info(info)
-        )
+        # broker.json is purely informational (no CAS).  Delete first so
+        # a restart against the same store doesn't fail on write_new.
+        # The two-step sequence is not atomic, but broker.json is only
+        # used for debugging — a brief gap is harmless.
+        broker_key = f"{self._prefix}broker.json"
+        await self._store.delete(broker_key)
+        await self._store.write_new(broker_key, serialize_broker_info(info))
 
         # Discover existing queues
         keys = await self._store.list_prefix(f"{self._prefix}queues/")

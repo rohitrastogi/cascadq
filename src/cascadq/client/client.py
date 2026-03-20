@@ -15,6 +15,7 @@ from cascadq.config import ClientConfig
 from cascadq.errors import (
     BrokerFencedError,
     CascadqError,
+    FlushFailedError,
     PayloadValidationError,
     QueueAlreadyExistsError,
     QueueNotFoundError,
@@ -106,10 +107,11 @@ class CascadqClient:
             QueueNotFoundError: Queue does not exist.
             BrokerFencedError: Broker is fenced (after retries).
         """
+        consumer_id = uuid4().hex
         resp = await self._request(
             "POST",
             f"/queues/{queue_name}/claim",
-            json={"consumer_id": uuid4().hex},
+            json={"consumer_id": consumer_id},
             expected_status=(200, 204),
         )
         if resp.status_code == 204:
@@ -120,6 +122,7 @@ class CascadqClient:
             _queue_name=queue_name,
             task_id=data["task_id"],
             payload=data["payload"],
+            consumer_id=consumer_id,
             _heartbeat_interval=self._config.heartbeat_interval_seconds,
         )
 
@@ -209,10 +212,12 @@ class ClaimedTask:
         _queue_name: str,
         task_id: str,
         payload: dict,
+        consumer_id: str,
         _heartbeat_interval: float,
     ) -> None:
         self.task_id = task_id
         self.payload = payload
+        self.consumer_id = consumer_id
         self._client = _client
         self._queue_name = _queue_name
         self._heartbeat_interval = _heartbeat_interval
@@ -281,6 +286,14 @@ _TASK_ERROR_MAP: dict[int, type[CascadqError]] = {
     409: TaskNotClaimedError,
 }
 
+# Maps the "code" field in the server's JSON error body to a client
+# exception. Used to disambiguate status codes that map to multiple
+# domain errors (e.g., 503 can be flush_failed or broker_fenced).
+_ERROR_CODE_OVERRIDE: dict[str, type[CascadqError]] = {
+    "flush_failed": FlushFailedError,
+    "broker_fenced": BrokerFencedError,
+}
+
 
 def _raise_for_status(
     resp: httpx.Response,
@@ -295,7 +308,10 @@ def _raise_for_status(
             response=resp,
         )
     try:
-        detail = resp.json().get("error", resp.text)
-    except Exception:
-        detail = resp.text
+        body = resp.json()
+    except ValueError:
+        raise error_cls(resp.text) from None
+    detail = body.get("error", resp.text)
+    code = body.get("code", "")
+    error_cls = _ERROR_CODE_OVERRIDE.get(code, error_cls)
     raise error_cls(detail)

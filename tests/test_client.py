@@ -9,7 +9,11 @@ from httpx import ASGITransport, AsyncClient
 from cascadq.broker.broker import Broker
 from cascadq.client.client import CascadqClient
 from cascadq.config import BrokerConfig, ClientConfig
-from cascadq.errors import QueueAlreadyExistsError, QueueNotFoundError
+from cascadq.errors import (
+    FlushFailedError,
+    QueueAlreadyExistsError,
+    QueueNotFoundError,
+)
 from cascadq.server.app import create_app
 from cascadq.storage.memory import InMemoryObjectStore
 
@@ -112,3 +116,28 @@ class TestDomainErrors:
         await client.create_queue("q")
         with pytest.raises(QueueAlreadyExistsError):
             await client.create_queue("q")
+
+    async def test_transient_flush_failure_raises_flush_failed(
+        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+    ) -> None:
+        """Client should raise FlushFailedError (not BrokerFencedError)
+        when the server returns a 503 with code='flush_failed'."""
+        broker = Broker(store=memory_store, config=test_config)
+        await broker.start()
+        app = create_app(store=memory_store, config=test_config, broker=broker)
+        app.state.broker = broker
+        transport = ASGITransport(app=app)
+        http_client = AsyncClient(transport=transport, base_url="http://test")
+        # max_retries=0: first 503 raises immediately without retries.
+        client_config = ClientConfig(
+            base_url="http://test", max_retries=0
+        )
+        client = CascadqClient(config=client_config, http_client=http_client)
+        try:
+            await client.create_queue("q")
+            memory_store.inject_transient_error("queues/q.json", count=1)
+            with pytest.raises(FlushFailedError):
+                await client.push("q", {"x": 1})
+        finally:
+            await client.close()
+            await broker.stop()
