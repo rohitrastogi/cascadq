@@ -1,13 +1,11 @@
-"""Core domain models for CAScadq.
-
-All models are frozen dataclasses — mutations create new instances.
-"""
+"""Core domain models for CAScadq."""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
+
+import orjson
 
 
 class TaskStatus(StrEnum):
@@ -16,8 +14,14 @@ class TaskStatus(StrEnum):
     completed = "completed"
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class Task:
+    """Mutable in-memory task representation.
+
+    Mutation methods modify the instance in-place and return self
+    so callers can use the same assignment pattern as before.
+    """
+
     task_id: str
     sequence: int
     created_at: float
@@ -29,18 +33,18 @@ class Task:
     def claim(
         self, now: float, claim_idempotency_key: str,
     ) -> Task:
-        return replace(
-            self,
-            status=TaskStatus.claimed,
-            last_heartbeat=now,
-            claim_idempotency_key=claim_idempotency_key,
-        )
+        self.status = TaskStatus.claimed
+        self.last_heartbeat = now
+        self.claim_idempotency_key = claim_idempotency_key
+        return self
 
     def heartbeat(self, now: float) -> Task:
-        return replace(self, last_heartbeat=now)
+        self.last_heartbeat = now
+        return self
 
     def finish(self) -> Task:
-        return replace(self, status=TaskStatus.completed)
+        self.status = TaskStatus.completed
+        return self
 
 
 @dataclass(frozen=True)
@@ -92,12 +96,12 @@ def serialize_queue_file(qf: QueueFile) -> bytes:
             for t in qf.tasks
         ],
     }
-    return json.dumps(data, separators=(",", ":")).encode()
+    return orjson.dumps(data)
 
 
 def deserialize_queue_file(raw: bytes) -> QueueFile:
     """Deserialize JSON bytes into a QueueFile."""
-    data = json.loads(raw)
+    data = orjson.loads(raw)
     meta = data["metadata"]
     tasks = [
         Task(
@@ -124,5 +128,3 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
             for k, v in data.get("idempotency_keys", {}).items()
         },
     )
-
-
