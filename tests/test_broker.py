@@ -11,13 +11,13 @@ from cascadq.errors import (
     QueueNotFoundError,
 )
 from cascadq.models import QueueFile, QueueMetadata, TaskStatus, serialize_queue_file
-from cascadq.storage.memory import InMemoryObjectStore
+from tests.support import FaultInjectingStore
 
 from .conftest import make_idempotency_key as _key
 
 
 async def _start_broker(
-    store: InMemoryObjectStore,
+    store: FaultInjectingStore,
     config: BrokerConfig,
 ) -> Broker:
     broker = Broker(store=store, config=config, clock=lambda: 1000.0)
@@ -27,7 +27,7 @@ async def _start_broker(
 
 class TestBrokerLifecycle:
     async def test_start_discovers_existing_queues(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         qf = QueueFile(
             metadata=QueueMetadata(created_at=500.0, payload_schema={}),
@@ -47,7 +47,7 @@ class TestBrokerLifecycle:
 
 class TestCreateDeleteQueue:
     async def test_create_and_push(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("work")
@@ -55,7 +55,7 @@ class TestCreateDeleteQueue:
         await broker.stop()
 
     async def test_create_duplicate_raises(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("work")
@@ -64,7 +64,7 @@ class TestCreateDeleteQueue:
         await broker.stop()
 
     async def test_delete_removes_queue(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("work")
@@ -74,7 +74,7 @@ class TestCreateDeleteQueue:
         await broker.stop()
 
     async def test_delete_nonexistent_raises(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         with pytest.raises(QueueNotFoundError):
@@ -84,7 +84,7 @@ class TestCreateDeleteQueue:
 
 class TestPushClaimFinish:
     async def test_full_task_lifecycle(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
@@ -98,7 +98,7 @@ class TestPushClaimFinish:
         await broker.stop()
 
     async def test_claim_empty_raises(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
@@ -107,7 +107,7 @@ class TestPushClaimFinish:
         await broker.stop()
 
     async def test_push_to_nonexistent_queue_raises(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         with pytest.raises(QueueNotFoundError):
@@ -117,7 +117,7 @@ class TestPushClaimFinish:
 
 class TestBrokerFencing:
     async def test_cas_conflict_fences_broker(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
