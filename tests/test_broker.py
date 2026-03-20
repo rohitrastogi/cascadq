@@ -13,6 +13,8 @@ from cascadq.errors import (
 from cascadq.models import QueueFile, QueueMetadata, TaskStatus, serialize_queue_file
 from cascadq.storage.memory import InMemoryObjectStore
 
+from .conftest import make_idempotency_key as _key
+
 
 async def _start_broker(
     store: InMemoryObjectStore,
@@ -39,7 +41,7 @@ class TestBrokerLifecycle:
         )
         await broker.start()
 
-        await broker.push("existing", {"data": 1})
+        await broker.push("existing", {"data": 1}, _key())
         await broker.stop()
 
 
@@ -49,7 +51,7 @@ class TestCreateDeleteQueue:
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("work")
-        await broker.push("work", {"job": "test"})
+        await broker.push("work", {"job": "test"}, _key())
         await broker.stop()
 
     async def test_create_duplicate_raises(
@@ -68,7 +70,7 @@ class TestCreateDeleteQueue:
         await broker.create_queue("work")
         await broker.delete_queue("work")
         with pytest.raises(QueueNotFoundError):
-            await broker.push("work", {})
+            await broker.push("work", {}, _key())
         await broker.stop()
 
     async def test_delete_nonexistent_raises(
@@ -87,8 +89,8 @@ class TestPushClaimFinish:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
 
-        await broker.push("q", {"url": "http://example.com"})
-        task = await broker.claim("q")
+        await broker.push("q", {"url": "http://example.com"}, _key())
+        task = await broker.claim("q", _key())
         assert task.status == TaskStatus.claimed
         assert task.payload == {"url": "http://example.com"}
 
@@ -101,7 +103,7 @@ class TestPushClaimFinish:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
         with pytest.raises(QueueEmptyError):
-            await broker.claim("q", timeout_seconds=0)
+            await broker.claim("q", _key(), timeout_seconds=0)
         await broker.stop()
 
     async def test_push_to_nonexistent_queue_raises(
@@ -109,7 +111,7 @@ class TestPushClaimFinish:
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         with pytest.raises(QueueNotFoundError):
-            await broker.push("nope", {})
+            await broker.push("nope", {}, _key())
         await broker.stop()
 
 
@@ -122,10 +124,10 @@ class TestBrokerFencing:
 
         memory_store.inject_conflict("queues/q.json")
         with pytest.raises(BrokerFencedError):
-            await broker.push("q", {"x": 1})
+            await broker.push("q", {"x": 1}, _key())
 
         assert broker.is_fenced
 
         with pytest.raises(BrokerFencedError):
-            await broker.push("q", {"x": 2})
+            await broker.push("q", {"x": 2}, _key())
         await broker.stop()

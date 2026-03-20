@@ -165,7 +165,7 @@ class Broker:
         self,
         queue_name: str,
         payload: dict,
-        idempotency_key: str | None = None,
+        idempotency_key: str,
     ) -> None:
         """Push a task to a queue. Blocks until the mutation is flushed."""
         self._check_fenced()
@@ -179,7 +179,7 @@ class Broker:
     async def claim(
         self,
         queue_name: str,
-        idempotency_key: str | None = None,
+        idempotency_key: str,
         timeout_seconds: float | None = None,
     ) -> Task:
         """Claim the next pending task.
@@ -231,11 +231,10 @@ class Broker:
         queue_name: str,
         task_id: str,
         sequence: int,
-        idempotency_key: str | None = None,
     ) -> None:
         """Mark a claimed task as completed. Blocks until flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
-        waiter = state.finish(task_id, sequence, idempotency_key)
+        waiter = state.finish(task_id, sequence)
         self._get_coordinator().notify()
         await waiter.wait()

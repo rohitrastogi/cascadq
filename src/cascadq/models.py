@@ -24,10 +24,10 @@ class Task:
     status: TaskStatus
     payload: dict
     last_heartbeat: float | None = None
-    claim_idempotency_key: str | None = None
+    claim_idempotency_key: str = ""
 
     def claim(
-        self, now: float, claim_idempotency_key: str | None = None,
+        self, now: float, claim_idempotency_key: str,
     ) -> Task:
         return replace(
             self,
@@ -107,7 +107,7 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
             status=TaskStatus(t["status"]),
             payload=t["payload"],
             last_heartbeat=t.get("last_heartbeat"),
-            claim_idempotency_key=t.get("claim_idempotency_key"),
+            claim_idempotency_key=t.get("claim_idempotency_key", ""),
         )
         for t in data["tasks"]
     ]

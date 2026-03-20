@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from cascadq.config import BrokerConfig
 from cascadq.models import QueueFile, QueueMetadata
 from cascadq.storage.memory import InMemoryObjectStore
+
+
+def make_idempotency_key() -> str:
+    """Generate a unique idempotency key for tests."""
+    return uuid4().hex
 
 
 @pytest.fixture

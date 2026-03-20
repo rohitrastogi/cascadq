@@ -77,7 +77,7 @@ class QueueState:
         self._claim_key_index: dict[str, str] = {
             t.claim_idempotency_key: t.task_id
             for t in queue_file.tasks
-            if t.claim_idempotency_key is not None
+            if t.claim_idempotency_key
         }
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
@@ -100,16 +100,15 @@ class QueueState:
         task_id: str,
         payload: dict,
         now: float,
-        idempotency_key: str | None = None,
+        idempotency_key: str,
     ) -> FlushWaiter:
         """Add a new task to the queue. Validates payload against schema.
 
         If *idempotency_key* was already used, this is a no-op.
         """
-        if idempotency_key is not None:
-            existing = self._idempotency_keys.get(idempotency_key)
-            if existing is not None:
-                return self._append_waiter()
+        existing = self._idempotency_keys.get(idempotency_key)
+        if existing is not None:
+            return self._resolved_waiter()
 
         schema = self._metadata.payload_schema
         if schema:
@@ -130,15 +129,14 @@ class QueueState:
         self._sorted_task_ids = None
         heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
         self._push_event.set()
-        if idempotency_key is not None:
-            self._idempotency_keys[idempotency_key] = IdempotencyRecord(
-                task_id=task_id, created_at=now,
-            )
+        self._idempotency_keys[idempotency_key] = IdempotencyRecord(
+            task_id=task_id, created_at=now,
+        )
         self._dirty = True
         return self._append_waiter()
 
     def claim(
-        self, now: float, idempotency_key: str | None = None,
+        self, now: float, idempotency_key: str,
     ) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number.
 
@@ -147,21 +145,19 @@ class QueueState:
         was re-queued or completed, the stale index entry is removed
         and a fresh claim proceeds.
         """
-        if idempotency_key is not None:
-            existing_id = self._claim_key_index.get(idempotency_key)
-            if existing_id is not None:
-                task = self._tasks.get(existing_id)
-                if task is not None and task.status == TaskStatus.claimed:
-                    return task, self._append_waiter()
-                del self._claim_key_index[idempotency_key]
+        existing_id = self._claim_key_index.get(idempotency_key)
+        if existing_id is not None:
+            task = self._tasks.get(existing_id)
+            if task is not None and task.status == TaskStatus.claimed:
+                return task, self._resolved_waiter()
+            del self._claim_key_index[idempotency_key]
 
         task = self._pop_next_pending()
         if task is None:
             raise QueueEmptyError(f"no pending tasks in queue {self.name!r}")
         claimed = task.claim(now, claim_idempotency_key=idempotency_key)
         self._tasks[claimed.task_id] = claimed
-        if idempotency_key is not None:
-            self._claim_key_index[idempotency_key] = claimed.task_id
+        self._claim_key_index[idempotency_key] = claimed.task_id
         self._dirty = True
         return claimed, self._append_waiter()
 
@@ -185,7 +181,6 @@ class QueueState:
         self,
         task_id: str,
         sequence: int,
-        idempotency_key: str | None = None,
     ) -> FlushWaiter:
         """Mark a claimed task as completed.
 
@@ -197,12 +192,12 @@ class QueueState:
         task = self._tasks.get(task_id)
         if task is None:
             if sequence <= self._compacted_through_sequence:
-                return self._append_waiter()
+                return self._resolved_waiter()
             raise TaskNotFoundError(
                 f"task {task_id!r} not found in queue {self.name!r}"
             )
         if task.status == TaskStatus.completed:
-            return self._append_waiter()
+            return self._resolved_waiter()
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
                 f"task {task_id!r} is not claimed (status={task.status.value})"
@@ -243,7 +238,7 @@ class QueueState:
                 task.task_id,
                 self.name,
             )
-            if task.claim_idempotency_key is not None:
+            if task.claim_idempotency_key:
                 self._claim_key_index.pop(task.claim_idempotency_key, None)
             del self._tasks[task.task_id]
             new_id = next_task_id_fn()
@@ -290,7 +285,7 @@ class QueueState:
             if max_seq > self._compacted_through_sequence:
                 self._compacted_through_sequence = max_seq
             for t in completed:
-                if t.claim_idempotency_key is not None:
+                if t.claim_idempotency_key:
                     self._claim_key_index.pop(
                         t.claim_idempotency_key, None,
                     )
@@ -384,4 +379,15 @@ class QueueState:
     def _append_waiter(self) -> FlushWaiter:
         waiter = FlushWaiter()
         self._write_buffer.append(waiter)
+        return waiter
+
+    @staticmethod
+    def _resolved_waiter() -> FlushWaiter:
+        """Return a pre-resolved waiter for idempotent no-op paths.
+
+        Not appended to the write buffer — the caller returns
+        immediately without waiting for a flush cycle.
+        """
+        waiter = FlushWaiter()
+        waiter.set_result()
         return waiter

@@ -55,12 +55,13 @@ class TestPushClaimFinish:
         await client.post("/queues", json={"name": "q"})
 
         resp = await client.post(
-            "/queues/q/push", json={"payload": {"url": "http://a"}}
+            "/queues/q/push",
+            json={"payload": {"url": "http://a"}, "idempotency_key": "p1"},
         )
         assert resp.status_code == 204
 
         resp = await client.post(
-            "/queues/q/claim", json={}
+            "/queues/q/claim", json={"idempotency_key": "c1"}
         )
         assert resp.status_code == 200
         claim_data = resp.json()
@@ -82,12 +83,16 @@ class TestPushClaimFinish:
     async def test_claim_empty_returns_204(self, client: AsyncClient) -> None:
         await client.post("/queues", json={"name": "q"})
         resp = await client.post(
-            "/queues/q/claim", json={"timeout_seconds": 0}
+            "/queues/q/claim",
+            json={"idempotency_key": "c1", "timeout_seconds": 0},
         )
         assert resp.status_code == 204
 
     async def test_push_to_nonexistent_queue(self, client: AsyncClient) -> None:
-        resp = await client.post("/queues/nope/push", json={"payload": {}})
+        resp = await client.post(
+            "/queues/nope/push",
+            json={"payload": {}, "idempotency_key": "p1"},
+        )
         assert resp.status_code == 404
 
     async def test_finish_nonexistent_task_returns_404(
@@ -115,7 +120,8 @@ class TestPayloadValidation:
             },
         )
         resp = await client.post(
-            "/queues/q/push", json={"payload": {"bad": 1}}
+            "/queues/q/push",
+            json={"payload": {"bad": 1}, "idempotency_key": "p1"},
         )
         assert resp.status_code == 422
 
