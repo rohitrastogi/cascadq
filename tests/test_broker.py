@@ -8,6 +8,7 @@ from cascadq.broker.broker import Broker
 from cascadq.config import BrokerConfig
 from cascadq.errors import (
     BrokerFencedError,
+    FlushExhaustedError,
     QueueAlreadyExistsError,
     QueueEmptyError,
     QueueNotFoundError,
@@ -118,11 +119,12 @@ class TestPushClaimFinish:
 
 
 class TestBrokerFencing:
-    async def test_cas_conflict_fences_broker(
+    async def test_cas_conflict_fences_only_one_queue(
         self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
+        await broker.create_queue("healthy")
 
         memory_store.inject_conflict("queues/q.json")
         with pytest.raises(BrokerFencedError):
@@ -132,6 +134,8 @@ class TestBrokerFencing:
 
         with pytest.raises(BrokerFencedError):
             await broker.push("q", {"x": 2}, _key())
+
+        await broker.push("healthy", {"x": 3}, _key())
         await broker.stop()
 
     async def test_blocking_claim_unblocks_on_fencing(
@@ -155,4 +159,45 @@ class TestBrokerFencing:
         with pytest.raises(BrokerFencedError):
             await broker.claim("q", _key())
         await fence_task
+        await broker.stop()
+
+    async def test_flush_exhaustion_recovers_automatically(
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
+    ) -> None:
+        """After flush exhaustion, the flusher enters recovering state
+        and automatically reloads from durable state in the background.
+        Once recovered, the queue accepts requests again."""
+        broker = await _start_broker(
+            memory_store,
+            test_config.model_copy(
+                update={
+                    "max_consecutive_flush_failures": 2,
+                    "flush_retry_delay_seconds": 0.01,
+                    "flush_recovery_interval_seconds": 0.1,
+                }
+            ),
+        )
+        await broker.create_queue("q")
+        await broker.create_queue("healthy")
+
+        memory_store.inject_transient_error("queues/q.json", count=2)
+        with pytest.raises(FlushExhaustedError):
+            await broker.push("q", {"x": 1}, _key())
+
+        # Other queues are unaffected
+        await broker.push("healthy", {"x": 2}, _key())
+
+        # Queue recovers in the background — retry until it accepts
+        for _ in range(50):
+            try:
+                await broker.push("q", {"x": 3}, _key())
+                break
+            except FlushExhaustedError:
+                await asyncio.sleep(0.1)
+        else:
+            pytest.fail("queue did not recover within timeout")
+
+        task = await broker.claim("q", _key())
+        assert task.payload == {"x": 3}
+
         await broker.stop()

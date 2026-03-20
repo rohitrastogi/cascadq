@@ -69,6 +69,7 @@ def run_workers(
                 "processing_jitter": scenario.processing_jitter_seconds,
                 "heartbeat_interval": scenario.heartbeat_interval_seconds,
                 "claim_timeout_seconds": claim_timeout,
+                "abandon_backoff_seconds": scenario.abandon_backoff_seconds,
             }
             processes.append((_spawn_worker(config, tmpdir), wid))
 
@@ -153,5 +154,4 @@ def _resolve_behaviors(qs: QueueSpec) -> list[str]:
         else:
             behaviors.append(ConsumerBehavior.normal.value)
     return behaviors
-
 

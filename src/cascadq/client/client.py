@@ -240,6 +240,7 @@ class ClaimedTask:
         self._queue_name = _queue_name
         self._heartbeat_interval = _heartbeat_interval
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._finishing = False
         self._finished = False
 
     async def __aenter__(self) -> ClaimedTask:
@@ -272,15 +273,19 @@ class ClaimedTask:
         acknowledged, so the broker does not re-queue the task while
         the completion flush is in flight.
         """
-        if self._finished:
+        if self._finished or self._finishing:
             return
-        await self._client._finish(
-            self._queue_name,
-            self.task_id,
-            self.sequence,
-        )
-        self._finished = True
-        await self._stop_heartbeat()
+        self._finishing = True
+        try:
+            await self._client._finish(
+                self._queue_name,
+                self.task_id,
+                self.sequence,
+            )
+            self._finished = True
+        finally:
+            self._finishing = False
+            await self._stop_heartbeat()
 
     async def _stop_heartbeat(self) -> None:
         if self._heartbeat_task is not None:
@@ -297,7 +302,7 @@ class ClaimedTask:
             try:
                 await self._client._heartbeat(self._queue_name, self.task_id)
             except TaskNotClaimedError:
-                if self._finished:
+                if self._finished or self._finishing:
                     return
                 logger.warning(
                     "Heartbeat rejected for task %s, stopping heartbeat",
@@ -305,6 +310,8 @@ class ClaimedTask:
                 )
                 return
             except TaskNotFoundError:
+                if self._finished or self._finishing:
+                    return
                 logger.warning(
                     "Task %s not found during heartbeat, stopping heartbeat",
                     self.task_id,

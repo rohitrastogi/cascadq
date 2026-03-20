@@ -13,6 +13,7 @@ import pytest
 
 from cascadq.client.client import CascadqClient
 from cascadq.config import ClientConfig
+from cascadq.models import TaskStatus, deserialize_queue_file
 
 from .config import ConsumerBehavior, QueueSpec, ScenarioConfig
 from .events import EventKind, EventRecorder
@@ -60,6 +61,30 @@ async def _cleanup_prefix(prefix: str) -> None:
         for key in keys:
             await store.delete(key)
     logger.info("Cleaned up %d objects under %s", len(keys), prefix)
+
+
+async def _wait_for_compaction(
+    store: object,
+    key: str,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> list[object]:
+    """Poll durable state until compaction removes all completed tasks."""
+    deadline = time.monotonic() + timeout_seconds
+    completed: list[object] = []
+    while True:
+        data, _ = await store.read(key)
+        queue_file = deserialize_queue_file(data)
+        completed = [
+            task for task in queue_file.tasks
+            if task.status == TaskStatus.completed
+        ]
+        if not completed:
+            return completed
+        if time.monotonic() >= deadline:
+            return completed
+        await asyncio.sleep(poll_interval_seconds)
 
 
 async def _run_standard_scenario(
@@ -212,28 +237,22 @@ class TestCompaction:
             )
             wall_clock = time.time() - t0
 
-            # Allow a final compaction cycle to run
-            await asyncio.sleep(2.0)
-
-        # Post-run: inspect persisted queue state
-        from cascadq.models import TaskStatus, deserialize_queue_file
-
         store = _make_store()
         try:
             async with store:
-                data, _ = await store.read(f"{prefix}queues/work.json")
-                qf = deserialize_queue_file(data)
-
-                completed = [
-                    t for t in qf.tasks if t.status == TaskStatus.completed
-                ]
+                completed = await _wait_for_compaction(
+                    store,
+                    f"{prefix}queues/work.json",
+                    timeout_seconds=15.0,
+                    poll_interval_seconds=0.5,
+                )
                 assert len(completed) == 0, (
                     f"Compaction should have removed all completed tasks, "
                     f"found {len(completed)}"
                 )
                 logger.info(
-                    "Compaction check passed: %d tasks remain (all pending/claimed)",
-                    len(qf.tasks),
+                    "Compaction check passed: no completed tasks remain "
+                    "in durable state"
                 )
 
             result = validate_events(recorder, scenario)
