@@ -7,6 +7,7 @@ import logging
 import random
 from types import TracebackType
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -91,7 +92,10 @@ class CascadqClient:
         await self._request(
             "POST",
             f"/queues/{queue_name}/push",
-            json={"payload": payload},
+            json={
+                "payload": payload,
+                "idempotency_key": uuid4().hex,
+            },
             expected_status=204,
         )
 
@@ -105,10 +109,11 @@ class CascadqClient:
             QueueNotFoundError: Queue does not exist.
             BrokerFencedError: Broker is fenced (after retries).
         """
+        idempotency_key = uuid4().hex
         resp = await self._request(
             "POST",
             f"/queues/{queue_name}/claim",
-            json={},
+            json={"idempotency_key": idempotency_key},
             expected_status=(200, 204),
         )
         if resp.status_code == 204:
@@ -133,12 +138,22 @@ class CascadqClient:
         )
 
     async def _finish(
-        self, queue_name: str, task_id: str, sequence: int,
+        self,
+        queue_name: str,
+        task_id: str,
+        sequence: int,
+        idempotency_key: str | None = None,
     ) -> None:
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "sequence": sequence,
+        }
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
         await self._request(
             "POST",
             f"/queues/{queue_name}/finish",
-            json={"task_id": task_id, "sequence": sequence},
+            json=body,
             expected_status=204,
             error_map=_TASK_ERROR_MAP,
         )
@@ -222,6 +237,7 @@ class ClaimedTask:
         self._heartbeat_interval = _heartbeat_interval
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._finished = False
+        self._finish_idempotency_key: str | None = None
 
     async def __aenter__(self) -> ClaimedTask:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -241,8 +257,15 @@ class ClaimedTask:
         """Mark the task as completed."""
         if self._finished:
             return
+        if self._finish_idempotency_key is None:
+            self._finish_idempotency_key = uuid4().hex
         await self._stop_heartbeat()
-        await self._client._finish(self._queue_name, self.task_id, self.sequence)
+        await self._client._finish(
+            self._queue_name,
+            self.task_id,
+            self.sequence,
+            self._finish_idempotency_key,
+        )
         self._finished = True
 
     async def _stop_heartbeat(self) -> None:
