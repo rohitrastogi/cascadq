@@ -10,6 +10,7 @@ import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -42,6 +43,10 @@ async def stress_stack(
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 
+    import tempfile
+    server_log = Path(tempfile.mktemp(suffix=".server.log"))
+    server_log_fh = open(server_log, "w")
+    logger.info("Server log: %s", server_log)
     server_proc = subprocess.Popen(
         [
             sys.executable, "-m", "cascadq",
@@ -51,7 +56,7 @@ async def stress_stack(
             "--log-level", "debug",
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=server_log_fh,
     )
     try:
         await _wait_for_server(base_url)
@@ -69,13 +74,11 @@ async def stress_stack(
         except subprocess.TimeoutExpired:
             server_proc.kill()
             server_proc.wait()
-        stderr_bytes = server_proc.stderr.read() if server_proc.stderr else b""
-        if stderr_bytes:
-            lines = stderr_bytes.decode(errors="replace").splitlines()
-            # Log heartbeat timeouts and S3 timings
-            for line in lines:
-                if "timeout" in line.lower() or "S3 write" in line:
-                    logger.info("server: %s", line)
+        server_log_fh.close()
+        lines = server_log.read_text().splitlines()
+        for line in lines:
+            if "timeout" in line.lower() or "Flush slow" in line:
+                logger.info("server: %s", line)
         logger.info("Server on port %d stopped", port)
 
 

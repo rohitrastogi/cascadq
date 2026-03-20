@@ -83,16 +83,13 @@ class S3ObjectStore:
                 Bucket=self._bucket, Key=key
             )
         except ClientError as exc:
-            elapsed = time.monotonic() - t0
-            logger.debug("S3 read %s failed in %.3fs: %s", key, elapsed, exc)
             if exc.response["Error"]["Code"] == "NoSuchKey":
                 raise KeyError(key) from exc
             raise
 
         async with response["Body"] as stream:
             data = await stream.read()
-        elapsed = time.monotonic() - t0
-        logger.debug("S3 read %s: %d bytes in %.3fs", key, len(data), elapsed)
+        logger.debug("s3 read %s %dB %.3fs", key, len(data), time.monotonic() - t0)
         return data, _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
     async def write(
@@ -106,12 +103,10 @@ class S3ObjectStore:
                 Bucket=self._bucket, Key=key, Body=data, IfMatch=etag_value
             )
         except ClientError as exc:
-            elapsed = time.monotonic() - t0
-            logger.debug("S3 write %s failed in %.3fs: %s", key, elapsed, exc)
+            logger.debug("s3 write %s failed %.3fs", key, time.monotonic() - t0)
             _raise_on_precondition(exc, f"version mismatch for key={key!r}")
             raise
-        elapsed = time.monotonic() - t0
-        logger.debug("S3 write %s: %d bytes in %.3fs", key, len(data), elapsed)
+        logger.debug("s3 write %s %dB %.3fs", key, len(data), time.monotonic() - t0)
         return _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
     async def write_new(self, key: str, data: bytes) -> VersionToken:
@@ -122,12 +117,10 @@ class S3ObjectStore:
                 Bucket=self._bucket, Key=key, Body=data, IfNoneMatch="*"
             )
         except ClientError as exc:
-            elapsed = time.monotonic() - t0
-            logger.debug("S3 write_new %s failed in %.3fs: %s", key, elapsed, exc)
+            logger.debug("s3 write_new %s failed %.3fs", key, time.monotonic() - t0)
             _raise_on_precondition(exc, f"key already exists: {key!r}")
             raise
-        elapsed = time.monotonic() - t0
-        logger.debug("S3 write_new %s: %d bytes in %.3fs", key, len(data), elapsed)
+        logger.debug("s3 write_new %s %dB %.3fs", key, len(data), time.monotonic() - t0)
         return _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
     async def delete(self, key: str) -> None:

@@ -83,7 +83,8 @@ class QueueState:
         }
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
-        self._dirty = False
+        self._generation = 0
+        self._flushed_generation = 0
         self._pending_heap: list[tuple[int, str]] = [
             (t.sequence, t.task_id)
             for t in queue_file.tasks
@@ -140,7 +141,7 @@ class QueueState:
         self._idempotency_keys[idempotency_key] = IdempotencyRecord(
             task_id=task_id, created_at=now,
         )
-        self._dirty = True
+        self._mark_dirty()
         return self._append_waiter()
 
     def claim(
@@ -166,7 +167,7 @@ class QueueState:
         claimed = task.claim(now, claim_idempotency_key=idempotency_key)
         self._tasks[claimed.task_id] = claimed
         self._claim_key_index[idempotency_key] = claimed.task_id
-        self._dirty = True
+        self._mark_dirty()
         return claimed, self._append_waiter()
 
     def heartbeat(self, task_id: str, now: float) -> None:
@@ -183,7 +184,7 @@ class QueueState:
                 f"task {task_id!r} is not claimed (status={task.status.value})"
             )
         self._tasks[task_id] = task.heartbeat(now)
-        self._dirty = True
+        self._mark_dirty()
 
     def finish(
         self,
@@ -211,7 +212,7 @@ class QueueState:
                 f"task {task_id!r} is not claimed (status={task.status.value})"
             )
         self._tasks[task_id] = task.finish()
-        self._dirty = True
+        self._mark_dirty()
         return self._append_waiter()
 
     def timeout_expired_claims(
@@ -266,7 +267,7 @@ class QueueState:
             next_seq -= 1
         self._sorted_task_ids = None
         self._push_event.set()
-        self._dirty = True
+        self._mark_dirty()
 
     async def wait_for_push(self, timeout: float | None) -> None:
         """Block until a push or re-queue signals new pending work.
@@ -326,7 +327,7 @@ class QueueState:
             len(completed),
             self.name,
         )
-        self._dirty = True
+        self._mark_dirty()
 
     def snapshot(self) -> QueueFile:
         """Return the current state as an immutable QueueFile.
@@ -347,6 +348,10 @@ class QueueState:
             idempotency_keys=dict(self._idempotency_keys),
         )
 
+    @property
+    def generation(self) -> int:
+        return self._generation
+
     def swap_write_buffer(self) -> list[FlushWaiter]:
         """Swap the write buffer for double-buffering.
 
@@ -366,14 +371,19 @@ class QueueState:
 
     @property
     def is_dirty(self) -> bool:
-        return self._dirty
+        return self._generation != self._flushed_generation
 
     @property
     def has_pending_waiters(self) -> bool:
         return len(self._write_buffer) > 0
 
+    def acknowledge_flush(self, generation: int) -> None:
+        """Record that the given generation was durably written to storage."""
+        if generation > self._flushed_generation:
+            self._flushed_generation = generation
+
     def mark_clean(self) -> None:
-        self._dirty = False
+        self._flushed_generation = self._generation
 
     def _pop_next_pending(self) -> Task | None:
         """Pop the lowest-sequence pending task from the heap.
@@ -401,3 +411,5 @@ class QueueState:
         self._write_buffer.append(waiter)
         return waiter
 
+    def _mark_dirty(self) -> None:
+        self._generation += 1

@@ -128,6 +128,7 @@ class TestClaimIdempotency:
         state.push("t1", {}, now=100.0, idempotency_key=_key())
         state.push("t2", {}, now=101.0, idempotency_key=_key())
         task1, _ = state.claim(now=200.0, idempotency_key="k1")
+        state.heartbeat("t1", now=200.0)
         # Re-queue t1 via heartbeat timeout
         state.timeout_expired_claims(
             now=250.0, timeout_seconds=30.0,
@@ -144,6 +145,7 @@ class TestHeartbeatTimeout:
         state.push("t1", {"x": 1}, now=100.0, idempotency_key=_key())
         state.push("t2", {"x": 2}, now=101.0, idempotency_key=_key())
         state.claim(now=200.0, idempotency_key=_key())
+        state.heartbeat("t1", now=200.0)
 
         # t1 is claimed with last_heartbeat=200.0
         # Timeout at now=250, timeout_seconds=30 → 250-200=50 > 30
@@ -180,6 +182,7 @@ class TestHeartbeatTimeout:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
         state.claim(now=200.0, idempotency_key=_key())
+        state.heartbeat("t1", now=200.0)
 
         state.timeout_expired_claims(
             now=250.0, timeout_seconds=30.0,
@@ -251,6 +254,7 @@ class TestSnapshot:
         state.push("t2", {}, now=101.0, idempotency_key=_key())
         state.push("t3", {}, now=102.0, idempotency_key=_key())
         state.claim(now=200.0, idempotency_key=_key())
+        state.heartbeat("t1", now=200.0)
 
         # Timeout t1 → re-queued with negative sequence
         state.timeout_expired_claims(
@@ -261,3 +265,38 @@ class TestSnapshot:
         # Re-queued task has min_seq - 1, so it sorts before t2 and t3
         assert snapshot.tasks[0].task_id == "t1r"
         assert snapshot.tasks[0].sequence < snapshot.tasks[1].sequence
+
+
+class TestGenerationDirtyTracking:
+    def test_acknowledge_flush_does_not_clear_concurrent_mutation(self) -> None:
+        """A mutation that arrives after the snapshot but before the write
+        completes must stay dirty.  acknowledge_flush(g) only advances
+        to generation g, so a newer generation g+1 remains dirty."""
+        state = _make_state()
+        state.push("t1", {}, now=100.0, idempotency_key=_key())
+        assert state.is_dirty
+
+        # Simulate flush: snapshot captures generation, then write begins
+        gen = state.generation
+        _ = state.snapshot()
+
+        # A new mutation arrives during the write
+        state.push("t2", {}, now=101.0, idempotency_key=_key())
+        assert state.generation == gen + 1
+
+        # Write completes — acknowledge only the snapshotted generation
+        state.acknowledge_flush(gen)
+
+        # The concurrent mutation must keep the queue dirty
+        assert state.is_dirty
+
+    def test_mark_clean_advances_to_current_generation(self) -> None:
+        """mark_clean() unconditionally advances to the current generation,
+        which is the correct behavior for tests that bypass the flush loop."""
+        state = _make_state()
+        state.push("t1", {}, now=100.0, idempotency_key=_key())
+        state.push("t2", {}, now=101.0, idempotency_key=_key())
+        assert state.is_dirty
+
+        state.mark_clean()
+        assert not state.is_dirty

@@ -252,16 +252,18 @@ class ClaimedTask:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_type is None and not self._finished:
-            try:
-                await self.finish()
-            except (TaskNotFoundError, TaskNotClaimedError):
-                logger.warning(
-                    "Task %s was re-queued before finish; "
-                    "another consumer will process it",
-                    self.task_id,
-                )
-        await self._stop_heartbeat()
+        try:
+            if exc_type is None and not self._finished:
+                try:
+                    await self.finish()
+                except TaskNotFoundError:
+                    logger.warning(
+                        "Task %s was re-queued before finish; "
+                        "another consumer will process it",
+                        self.task_id,
+                    )
+        finally:
+            await self._stop_heartbeat()
 
     async def finish(self) -> None:
         """Mark the task as completed.
@@ -294,8 +296,19 @@ class ClaimedTask:
             await asyncio.sleep(self._heartbeat_interval)
             try:
                 await self._client._heartbeat(self._queue_name, self.task_id)
-            except (TaskNotClaimedError, TaskNotFoundError):
-                # Task was finished or re-queued — stop silently.
+            except TaskNotClaimedError:
+                if self._finished:
+                    return
+                logger.warning(
+                    "Heartbeat rejected for task %s, stopping heartbeat",
+                    self.task_id,
+                )
+                return
+            except TaskNotFoundError:
+                logger.warning(
+                    "Task %s not found during heartbeat, stopping heartbeat",
+                    self.task_id,
+                )
                 return
             except (httpx.HTTPError, CascadqError):
                 logger.warning(

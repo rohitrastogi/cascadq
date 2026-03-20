@@ -133,6 +133,116 @@ class TestPayloadValidation:
             await client.push("typed", {"bad": 123})
 
 
+class TestSlowFlushResilience:
+    """Edge-case tests for the heartbeat lifecycle fixes.
+
+    Uses inject_write_delay to simulate R2 tail latency so the flush
+    takes longer than the heartbeat timeout.
+    """
+
+    @pytest.fixture
+    async def slow_flush_client(
+        self, memory_store: FaultInjectingStore,
+    ) -> AsyncGenerator[tuple[CascadqClient, FaultInjectingStore]]:
+        """Full stack with aggressive heartbeat timing for slow-flush tests."""
+        config = BrokerConfig(
+            heartbeat_timeout_seconds=0.3,
+            heartbeat_check_interval_seconds=0.1,
+            compaction_interval_seconds=100.0,
+        )
+        broker = Broker(store=memory_store, config=config)
+        await broker.start()
+        app = create_app(store=memory_store, config=config, broker=broker)
+        app.state.broker = broker
+        transport = ASGITransport(app=app)
+        http_client = AsyncClient(transport=transport, base_url="http://test")
+        client_config = ClientConfig(
+            base_url="http://test",
+            heartbeat_interval_seconds=0.1,
+        )
+        client = CascadqClient(config=client_config, http_client=http_client)
+        yield client, memory_store
+        await client.close()
+        await broker.stop()
+
+    async def test_slow_claim_flush_does_not_requeue(
+        self, slow_flush_client: tuple[CascadqClient, FaultInjectingStore],
+    ) -> None:
+        """Lease starts after commit: a slow claim flush must not cause
+        the heartbeat checker to re-queue the task before the client
+        receives the claim response."""
+        client, store = slow_flush_client
+        await client.create_queue("q")
+        await client.push("q", {"x": 1})
+
+        # Next flush (the claim) will take 0.8s — longer than
+        # the 0.3s heartbeat timeout.  The heartbeat checker
+        # must NOT re-queue because last_heartbeat is None until
+        # after the flush commits.
+        store.inject_write_delay("queues/q.json", 0.8)
+
+        claimed = await client.claim("q")
+        assert claimed is not None
+
+        # Finish normally — proves the task was NOT re-queued
+        async with claimed:
+            pass
+
+        result = await client.claim("q", timeout_seconds=0)
+        assert result is None
+
+    async def test_slow_finish_flush_heartbeats_keep_task_alive(
+        self, slow_flush_client: tuple[CascadqClient, FaultInjectingStore],
+    ) -> None:
+        """Heartbeats continue during finish: a slow finish flush must not
+        cause the heartbeat checker to re-queue the task while the
+        completion is being persisted."""
+        client, store = slow_flush_client
+        await client.create_queue("q")
+        await client.push("q", {"x": 1})
+
+        claimed = await client.claim("q")
+        assert claimed is not None
+
+        async with claimed:
+            # Inject delay on the NEXT write (the finish flush).
+            # The 0.8s delay exceeds the 0.3s timeout, but heartbeats
+            # (every 0.1s) keep the task alive during the flush.
+            store.inject_write_delay("queues/q.json", 0.8)
+
+        # If heartbeats had stopped before the finish RPC,
+        # the task would have been re-queued and finish would
+        # have raised TaskNotFoundError.  The fact that we got
+        # here proves heartbeats kept the lease alive.
+        result = await client.claim("q", timeout_seconds=0)
+        assert result is None
+
+    async def test_heartbeat_loop_exits_cleanly_after_finish(
+        self, slow_flush_client: tuple[CascadqClient, FaultInjectingStore],
+    ) -> None:
+        """When finish() completes before the heartbeat loop is cancelled,
+        the next heartbeat gets TaskNotClaimedError.  The loop should
+        exit silently (not log a warning) because self._finished is True."""
+        client, _ = slow_flush_client
+        await client.create_queue("q")
+        await client.push("q", {"x": 1})
+
+        claimed = await client.claim("q")
+        assert claimed is not None
+
+        async with claimed:
+            # Let heartbeats run, then finish on exit
+            await asyncio.sleep(0.15)
+
+        # Give the heartbeat loop time to fire one more
+        # iteration after finish() set _finished = True
+        await asyncio.sleep(0.1)
+
+        # If the loop didn't exit cleanly, the heartbeat task
+        # would still be running.  Verify it stopped.
+        assert claimed._heartbeat_task is None
+
+
 class TestQueueDeletion:
     async def test_delete_queue_rejects_subsequent_operations(
         self, client: CascadqClient

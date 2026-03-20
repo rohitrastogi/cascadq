@@ -34,7 +34,6 @@ class Task:
         self, now: float, claim_idempotency_key: str,
     ) -> Task:
         self.status = TaskStatus.claimed
-        self.last_heartbeat = now
         self.claim_idempotency_key = claim_idempotency_key
         return self
 

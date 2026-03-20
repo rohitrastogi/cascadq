@@ -92,8 +92,9 @@ class FlushCoordinator:
         fences. On transient failure waiters are returned to their queues
         and the flush retries after a delay.
         """
+        t_start = time.monotonic()
         waiters_by_queue: dict[str, list[FlushWaiter]] = {}
-        jobs: list[tuple[str, QueueState, bytes, VersionToken]] = []
+        jobs: list[tuple[str, QueueState, bytes, VersionToken, int]] = []
 
         for state in self._queue_states.values():
             if not state.is_dirty and not state.has_pending_waiters:
@@ -102,44 +103,43 @@ class FlushCoordinator:
             if swapped:
                 waiters_by_queue[state.name] = swapped
             if state.is_dirty:
-                snapshot = state.snapshot()
-                data = serialize_queue_file(snapshot)
-                jobs.append((state.name, state, data, state.version))
+                generation = state.generation
+                data = serialize_queue_file(state.snapshot())
+                jobs.append((state.name, state, data, state.version, generation))
 
         all_waiters = [
             w for ws in waiters_by_queue.values() for w in ws
         ]
-        if all_waiters:
-            logger.debug(
-                "Flush batch: %d waiters, %d dirty queues",
-                len(all_waiters), len(jobs),
-            )
+
+        if not jobs and not all_waiters:
+            return
 
         if not jobs:
             for waiter in all_waiters:
                 waiter.set_result()
             return
 
-        t0 = time.monotonic()
         try:
             async with asyncio.TaskGroup() as tg:
                 results: dict[str, asyncio.Task[VersionToken]] = {}
-                for name, _state, data, version in jobs:
+                for name, _state, data, version, _generation in jobs:
                     key = queue_key(self._prefix, name)
                     results[name] = tg.create_task(
                         self._store.write(key, data, version)
                     )
             # All succeeded — update versions, mark clean, resolve waiters
-            for name, state, _data, _version in jobs:
+            for name, state, _data, _version, generation in jobs:
                 state.version = results[name].result()
-                state.mark_clean()
+                state.acknowledge_flush(generation)
             self._consecutive_failures = 0
-            elapsed = time.monotonic() - t0
-            logger.debug(
-                "Flush OK: %d waiters in %.3fs", len(all_waiters), elapsed,
-            )
             for waiter in all_waiters:
                 waiter.set_result()
+            total_ms = (time.monotonic() - t_start) * 1000
+            if total_ms > 500:
+                logger.info(
+                    "Flush slow: %d waiters, %d writes, %.0fms",
+                    len(all_waiters), len(jobs), total_ms,
+                )
         except* ConflictError as eg:
             logger.error(
                 "CAS conflict detected — broker is fenced: %s",
