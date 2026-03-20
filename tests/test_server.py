@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from cascadq.broker.broker import Broker
 from cascadq.config import BrokerConfig
+from cascadq.errors import BrokerFencedError
 from cascadq.server.app import create_app
 from tests.support import FaultInjectingStore
 
@@ -26,6 +27,52 @@ async def client(
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     await broker.stop()
+
+
+class TestHealthProbes:
+    async def test_healthz_returns_200(self, client: AsyncClient) -> None:
+        resp = await client.get("/healthz")
+        assert resp.status_code == 200
+
+    async def test_readyz_returns_200_when_broker_started(
+        self, client: AsyncClient,
+    ) -> None:
+        resp = await client.get("/readyz")
+        assert resp.status_code == 200
+
+    async def test_readyz_returns_503_before_broker_starts(
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig,
+    ) -> None:
+        app = create_app(store=memory_store, config=test_config)
+        # Don't trigger lifespan — broker is never set on app.state
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/readyz")
+            assert resp.status_code == 503
+            assert resp.json()["code"] == "not_ready"
+
+    async def test_readyz_returns_503_when_broker_fenced(
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig,
+    ) -> None:
+        broker = Broker(store=memory_store, config=test_config)
+        await broker.start()
+        await broker.create_queue("q")
+
+        app = create_app(store=memory_store, config=test_config, broker=broker)
+        app.state.broker = broker
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            # Fence the queue via CAS conflict
+            memory_store.inject_conflict("queues/q.json")
+            with pytest.raises(BrokerFencedError):
+                await broker.push("q", {"x": 1}, "k1")
+
+            resp = await c.get("/readyz")
+            assert resp.status_code == 503
+            assert resp.json()["code"] == "broker_fenced"
+
+        await broker.stop()
 
 
 class TestQueueManagement:

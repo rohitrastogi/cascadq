@@ -50,6 +50,27 @@ def _error_response(exc: Exception) -> Response:
     )
 
 
+def healthz(request: Request) -> Response:
+    """Liveness probe — returns 200 if the event loop is responsive."""
+    return Response(status_code=200)
+
+
+def readyz(request: Request) -> Response:
+    """Readiness probe — returns 200 when the broker can serve traffic."""
+    broker: Broker | None = getattr(request.app.state, "broker", None)
+    if broker is None:
+        return JSONResponse(
+            {"error": "broker not started", "code": "not_ready"},
+            status_code=503,
+        )
+    if broker.is_fenced:
+        return JSONResponse(
+            {"error": "broker is fenced", "code": "broker_fenced"},
+            status_code=503,
+        )
+    return Response(status_code=200)
+
+
 def _get_broker(request: Request) -> Broker:
     return request.app.state.broker
 

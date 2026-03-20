@@ -50,6 +50,8 @@ def create_app(
 
     app = Starlette(
         routes=[
+            Route("/healthz", routes.healthz, methods=["GET"]),
+            Route("/readyz", routes.readyz, methods=["GET"]),
             Route("/queues", routes.create_queue, methods=["POST"]),
             Route("/queues/{name}", routes.delete_queue, methods=["DELETE"]),
             Route("/queues/{name}/push", routes.push, methods=["POST"]),

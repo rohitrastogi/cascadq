@@ -260,6 +260,26 @@ class QueueFlusher:
             if self._state.is_dirty or self._state.has_pending_waiters:
                 self._flush_event.set()
         except ConflictError as exc:
+            # A ConflictError means another broker wrote to this queue's
+            # S3 object with a different ETag.  This broker's in-memory
+            # state is stale; fencing is terminal.
+            #
+            # Production scenarios where this happens:
+            #   1. Network partition — orchestrator thinks this pod is
+            #      dead and starts a replacement on another node, but
+            #      this pod is still running.  Both write; one loses.
+            #   2. Slow shutdown — old pod hasn't finished draining
+            #      before the new pod starts writing.
+            #   3. Operator error — two brokers pointed at the same
+            #      S3 prefix.
+            #
+            # In all cases the correct response is to stop writing.
+            # CAS already prevented corruption; fencing ensures this
+            # broker doesn't keep competing.  The readyz probe returns
+            # 503 so the orchestrator can kill and replace this pod.
+            #
+            # Deploy with a "recreate" strategy (kill old, start new)
+            # to avoid routine CAS conflicts during restarts.
             metrics.flush_errors_total.labels(queue=name, error="conflict").inc()
             logger.error(
                 "CAS conflict detected for queue %s — queue is fenced: %s",
