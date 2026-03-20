@@ -15,7 +15,6 @@ from cascadq.config import ClientConfig
 from cascadq.errors import (
     BrokerFencedError,
     CascadqError,
-    FlushFailedError,
     PayloadValidationError,
     QueueAlreadyExistsError,
     QueueNotFoundError,
@@ -81,21 +80,23 @@ class CascadqClient:
             "DELETE", f"/queues/{name}", expected_status=204
         )
 
-    async def push(self, queue_name: str, payload: dict) -> str:
-        """Push a task and return the task_id.
+    async def push(self, queue_name: str, payload: dict) -> None:
+        """Push a task to a queue.
 
         Raises:
             QueueNotFoundError: Queue does not exist.
             PayloadValidationError: Payload doesn't match the queue's schema.
             BrokerFencedError: Broker is fenced (after retries).
         """
-        resp = await self._request(
+        await self._request(
             "POST",
             f"/queues/{queue_name}/push",
-            json={"payload": payload},
-            expected_status=200,
+            json={
+                "payload": payload,
+                "idempotency_key": uuid4().hex,
+            },
+            expected_status=204,
         )
-        return resp.json()["task_id"]
 
     async def claim(self, queue_name: str) -> ClaimedTask | None:
         """Claim the next pending task, or return None if the queue is empty.
@@ -107,11 +108,11 @@ class CascadqClient:
             QueueNotFoundError: Queue does not exist.
             BrokerFencedError: Broker is fenced (after retries).
         """
-        consumer_id = uuid4().hex
+        idempotency_key = uuid4().hex
         resp = await self._request(
             "POST",
             f"/queues/{queue_name}/claim",
-            json={"consumer_id": consumer_id},
+            json={"idempotency_key": idempotency_key},
             expected_status=(200, 204),
         )
         if resp.status_code == 204:
@@ -123,7 +124,6 @@ class CascadqClient:
             task_id=data["task_id"],
             sequence=data["sequence"],
             payload=data["payload"],
-            consumer_id=consumer_id,
             _heartbeat_interval=self._config.heartbeat_interval_seconds,
         )
 
@@ -137,12 +137,22 @@ class CascadqClient:
         )
 
     async def _finish(
-        self, queue_name: str, task_id: str, sequence: int,
+        self,
+        queue_name: str,
+        task_id: str,
+        sequence: int,
+        idempotency_key: str | None = None,
     ) -> None:
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "sequence": sequence,
+        }
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
         await self._request(
             "POST",
             f"/queues/{queue_name}/finish",
-            json={"task_id": task_id, "sequence": sequence},
+            json=body,
             expected_status=204,
             error_map=_TASK_ERROR_MAP,
         )
@@ -216,18 +226,17 @@ class ClaimedTask:
         task_id: str,
         sequence: int,
         payload: dict,
-        consumer_id: str,
         _heartbeat_interval: float,
     ) -> None:
         self.task_id = task_id
         self.sequence = sequence
         self.payload = payload
-        self.consumer_id = consumer_id
         self._client = _client
         self._queue_name = _queue_name
         self._heartbeat_interval = _heartbeat_interval
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._finished = False
+        self._finish_idempotency_key: str | None = None
 
     async def __aenter__(self) -> ClaimedTask:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -247,8 +256,15 @@ class ClaimedTask:
         """Mark the task as completed."""
         if self._finished:
             return
+        if self._finish_idempotency_key is None:
+            self._finish_idempotency_key = uuid4().hex
         await self._stop_heartbeat()
-        await self._client._finish(self._queue_name, self.task_id, self.sequence)
+        await self._client._finish(
+            self._queue_name,
+            self.task_id,
+            self.sequence,
+            self._finish_idempotency_key,
+        )
         self._finished = True
 
     async def _stop_heartbeat(self) -> None:
@@ -295,7 +311,6 @@ _TASK_ERROR_MAP: dict[int, type[CascadqError]] = {
 # exception. Used to disambiguate status codes that map to multiple
 # domain errors (e.g., 503 can be flush_failed or broker_fenced).
 _ERROR_CODE_OVERRIDE: dict[str, type[CascadqError]] = {
-    "flush_failed": FlushFailedError,
     "broker_fenced": BrokerFencedError,
 }
 

@@ -165,30 +165,26 @@ class Broker:
         queue_name: str,
         payload: dict,
         idempotency_key: str | None = None,
-    ) -> str:
-        """Push a task to a queue. Blocks until the mutation is flushed.
-
-        Returns the task_id assigned to the new task.  If an
-        *idempotency_key* is provided and was already used, the
-        original task_id is returned without creating a duplicate.
-        """
+    ) -> None:
+        """Push a task to a queue. Blocks until the mutation is flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
         task_id = uuid4().hex
         now = self._clock()
-        resolved_id, waiter = state.push(
-            task_id, payload, now, idempotency_key,
-        )
+        waiter = state.push(task_id, payload, now, idempotency_key)
         self._get_coordinator().notify()
         await waiter.wait()
-        return resolved_id
 
-    async def claim(self, queue_name: str, consumer_id: str) -> Task:
+    async def claim(
+        self,
+        queue_name: str,
+        idempotency_key: str | None = None,
+    ) -> Task:
         """Claim the next pending task. Blocks until the mutation is flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
         now = self._clock()
-        task, waiter = state.claim(consumer_id, now)
+        task, waiter = state.claim(now, idempotency_key)
         self._get_coordinator().notify()
         await waiter.wait()
         return task
@@ -203,11 +199,15 @@ class Broker:
         await waiter.wait()
 
     async def finish(
-        self, queue_name: str, task_id: str, sequence: int,
+        self,
+        queue_name: str,
+        task_id: str,
+        sequence: int,
+        idempotency_key: str | None = None,
     ) -> None:
         """Mark a claimed task as completed. Blocks until flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
-        waiter = state.finish(task_id, sequence)
+        waiter = state.finish(task_id, sequence, idempotency_key)
         self._get_coordinator().notify()
         await waiter.wait()

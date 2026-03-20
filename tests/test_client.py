@@ -44,12 +44,10 @@ class TestClientLifecycle:
     ) -> None:
         client, _ = server_client
         await client.create_queue("q")
-        task_id = await client.push("q", {"url": "http://example.com"})
-        assert isinstance(task_id, str)
+        await client.push("q", {"url": "http://example.com"})
 
         claimed = await client.claim("q")
         assert claimed is not None
-        assert claimed.task_id == task_id
         assert claimed.payload == {"url": "http://example.com"}
 
         async with claimed:
@@ -138,8 +136,7 @@ class TestDomainErrors:
             await client.create_queue("q")
             memory_store.inject_transient_error("queues/q.json", count=1)
             # Push should succeed — broker retries the flush internally
-            task_id = await client.push("q", {"x": 1})
-            assert isinstance(task_id, str)
+            await client.push("q", {"x": 1})
         finally:
             await client.close()
             await broker.stop()

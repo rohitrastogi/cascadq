@@ -57,15 +57,14 @@ class TestPushClaimFinish:
         resp = await client.post(
             "/queues/q/push", json={"payload": {"url": "http://a"}}
         )
-        assert resp.status_code == 200
-        task_id = resp.json()["task_id"]
+        assert resp.status_code == 204
 
         resp = await client.post(
-            "/queues/q/claim", json={"consumer_id": "w1"}
+            "/queues/q/claim", json={}
         )
         assert resp.status_code == 200
         claim_data = resp.json()
-        assert claim_data["task_id"] == task_id
+        task_id = claim_data["task_id"]
         assert claim_data["payload"] == {"url": "http://a"}
         sequence = claim_data["sequence"]
 
@@ -83,7 +82,7 @@ class TestPushClaimFinish:
     async def test_claim_empty_returns_204(self, client: AsyncClient) -> None:
         await client.post("/queues", json={"name": "q"})
         resp = await client.post(
-            "/queues/q/claim", json={"consumer_id": "w1"}
+            "/queues/q/claim", json={}
         )
         assert resp.status_code == 204
 
@@ -91,15 +90,15 @@ class TestPushClaimFinish:
         resp = await client.post("/queues/nope/push", json={"payload": {}})
         assert resp.status_code == 404
 
-    async def test_finish_unclaimed_task(self, client: AsyncClient) -> None:
+    async def test_finish_nonexistent_task_returns_404(
+        self, client: AsyncClient,
+    ) -> None:
         await client.post("/queues", json={"name": "q"})
-        resp = await client.post("/queues/q/push", json={"payload": {}})
-        task_id = resp.json()["task_id"]
         resp = await client.post(
             "/queues/q/finish",
-            json={"task_id": task_id, "sequence": 0},
+            json={"task_id": "nonexistent", "sequence": 999},
         )
-        assert resp.status_code == 409
+        assert resp.status_code == 404
 
 
 class TestPayloadValidation:

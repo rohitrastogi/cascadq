@@ -14,10 +14,11 @@ class CreateQueueRequest(BaseModel):
 
 class PushRequest(BaseModel):
     payload: dict[str, Any]
+    idempotency_key: str | None = None
 
 
 class ClaimRequest(BaseModel):
-    consumer_id: str
+    idempotency_key: str | None = None
 
 
 class HeartbeatRequest(BaseModel):
@@ -27,3 +28,4 @@ class HeartbeatRequest(BaseModel):
 class FinishRequest(BaseModel):
     task_id: str
     sequence: int
+    idempotency_key: str | None = None

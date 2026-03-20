@@ -48,20 +48,18 @@ class TestFIFOOrdering:
     ) -> None:
         """Multiple consumers each get distinct tasks in FIFO order."""
         await client.create_queue("work")
-        ids = []
         for i in range(4):
-            tid = await client.push("work", {"i": i})
-            ids.append(tid)
+            await client.push("work", {"i": i})
 
-        claimed_ids = []
+        claimed_payloads = []
         for _ in range(4):
             claimed = await client.claim("work")
             assert claimed is not None
-            claimed_ids.append(claimed.task_id)
+            claimed_payloads.append(claimed.payload)
             async with claimed:
                 pass
 
-        assert claimed_ids == ids
+        assert claimed_payloads == [{"i": i} for i in range(4)]
 
     async def test_claim_returns_none_after_all_consumed(
         self, client: CascadqClient
@@ -128,8 +126,7 @@ class TestPayloadValidation:
             },
         )
         # Valid payload succeeds
-        task_id = await client.push("typed", {"url": "http://example.com"})
-        assert task_id
+        await client.push("typed", {"url": "http://example.com"})
 
         # Invalid payload fails
         with pytest.raises(PayloadValidationError):

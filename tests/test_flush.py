@@ -46,7 +46,7 @@ class TestFlushCoordinator:
     ) -> None:
         coord, states = await _setup_coordinator(memory_store)
 
-        _, waiter = states["test"].push("t1", {}, now=100.0)
+        waiter = states["test"].push("t1", {}, now=100.0)
         coord.start()
         coord.notify()
 
@@ -60,8 +60,8 @@ class TestFlushCoordinator:
     ) -> None:
         coord, states = await _setup_coordinator(memory_store, ["a", "b"])
 
-        _, waiter_a = states["a"].push("t1", {}, now=100.0)
-        _, waiter_b = states["b"].push("t2", {}, now=100.0)
+        waiter_a = states["a"].push("t1", {}, now=100.0)
+        waiter_b = states["b"].push("t2", {}, now=100.0)
 
         memory_store.inject_conflict("queues/a.json")
         coord.start()
@@ -86,7 +86,7 @@ class TestFlushCoordinator:
             retry_delay_seconds=0.01,
         )
 
-        _, waiter = states["test"].push("t1", {}, now=100.0)
+        waiter = states["test"].push("t1", {}, now=100.0)
         memory_store.inject_transient_error("queues/test.json", count=1)
         coord.start()
         coord.notify()
@@ -109,7 +109,7 @@ class TestFlushCoordinator:
             retry_delay_seconds=0.01,
         )
 
-        _, waiter = states["test"].push("t1", {}, now=100.0)
+        waiter = states["test"].push("t1", {}, now=100.0)
         memory_store.inject_transient_error("queues/test.json", count=2)
         coord.start()
         coord.notify()
@@ -126,11 +126,11 @@ class TestFlushCoordinator:
         coord, states = await _setup_coordinator(memory_store)
         coord.start()
 
-        _, waiter1 = states["test"].push("t1", {}, now=100.0)
+        waiter1 = states["test"].push("t1", {}, now=100.0)
         coord.notify()
         await asyncio.wait_for(waiter1.wait(), timeout=2.0)
 
-        _, waiter2 = states["test"].push("t2", {}, now=101.0)
+        waiter2 = states["test"].push("t2", {}, now=101.0)
         coord.notify()
         await asyncio.wait_for(waiter2.wait(), timeout=2.0)
 
