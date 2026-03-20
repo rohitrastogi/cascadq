@@ -33,5 +33,9 @@ class BrokerFencedError(CascadqError):
     """This broker has been fenced out by another broker's CAS write."""
 
 
+class FlushFailedError(CascadqError):
+    """A flush attempt failed transiently; clients should retry."""
+
+
 class PayloadValidationError(CascadqError):
     """The task payload does not match the queue's JSON Schema."""

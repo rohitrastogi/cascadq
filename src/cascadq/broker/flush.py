@@ -7,7 +7,7 @@ import logging
 
 from cascadq.broker import queue_key
 from cascadq.broker.queue_state import FlushWaiter, QueueState
-from cascadq.errors import BrokerFencedError, ConflictError
+from cascadq.errors import BrokerFencedError, ConflictError, FlushFailedError
 from cascadq.models import serialize_queue_file
 from cascadq.storage.protocol import ObjectStore, VersionToken
 
@@ -91,6 +91,11 @@ class FlushCoordinator:
                 jobs.append((state.name, state, data, state.version))
 
         if not jobs:
+            if all_waiters:
+                logger.debug(
+                    "Resolving %d waiters with no dirty queues to flush",
+                    len(all_waiters),
+                )
             for waiter in all_waiters:
                 waiter.set_result()
             return
@@ -132,7 +137,7 @@ class FlushCoordinator:
             else:
                 # Fail current waiters — their mutations are in-memory but
                 # not persisted. They'll need to retry at the HTTP level.
-                error = BrokerFencedError(
+                error = FlushFailedError(
                     "flush failed, client should retry"
                 )
                 for waiter in all_waiters:
