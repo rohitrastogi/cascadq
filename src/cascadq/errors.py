@@ -34,7 +34,7 @@ class BrokerFencedError(CascadqError):
 
 
 class FlushFailedError(CascadqError):
-    """A flush attempt failed transiently; clients should retry."""
+    """Reserved. Transient flush failures are now retried internally."""
 
 
 class PayloadValidationError(CascadqError):
