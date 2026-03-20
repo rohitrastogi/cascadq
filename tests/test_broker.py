@@ -24,26 +24,6 @@ async def _start_broker(
 
 
 class TestBrokerLifecycle:
-    async def test_start_writes_broker_info(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
-    ) -> None:
-        broker = await _start_broker(memory_store, test_config)
-        data, _ = await memory_store.read("broker.json")
-        assert b"broker_id" in data
-        await broker.stop()
-
-    async def test_restart_overwrites_broker_info(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
-    ) -> None:
-        """A second broker start on the same store must not fail."""
-        broker1 = await _start_broker(memory_store, test_config)
-        await broker1.stop()
-
-        broker2 = await _start_broker(memory_store, test_config)
-        data, _ = await memory_store.read("broker.json")
-        assert b"broker_id" in data
-        await broker2.stop()
-
     async def test_start_discovers_existing_queues(
         self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
     ) -> None:

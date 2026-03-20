@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import socket
 from collections.abc import Callable
 from time import time
 from uuid import uuid4
@@ -21,12 +20,10 @@ from cascadq.errors import (
     QueueNotFoundError,
 )
 from cascadq.models import (
-    BrokerInfo,
     QueueFile,
     QueueMetadata,
     Task,
     deserialize_queue_file,
-    serialize_broker_info,
     serialize_queue_file,
 )
 from cascadq.storage.protocol import ObjectStore
@@ -62,20 +59,7 @@ class Broker:
         return self._coordinator is not None and self._coordinator.is_fenced
 
     async def start(self) -> None:
-        """Start the broker: write identity, discover queues, start background tasks."""
-        info = BrokerInfo(
-            broker_id=self._broker_id,
-            host=socket.gethostname(),
-            started_at=self._clock(),
-        )
-        # broker.json is purely informational (no CAS).  Delete first so
-        # a restart against the same store doesn't fail on write_new.
-        # The two-step sequence is not atomic, but broker.json is only
-        # used for debugging — a brief gap is harmless.
-        broker_key = f"{self._prefix}broker.json"
-        await self._store.delete(broker_key)
-        await self._store.write_new(broker_key, serialize_broker_info(info))
-
+        """Start the broker: discover queues, start background tasks."""
         # Discover existing queues
         keys = await self._store.list_prefix(f"{self._prefix}queues/")
         for key in keys:

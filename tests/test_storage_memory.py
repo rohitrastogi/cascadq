@@ -62,6 +62,6 @@ class TestCASSemantics:
     ) -> None:
         await store.write_new("queues/a.json", b"")
         await store.write_new("queues/b.json", b"")
-        await store.write_new("broker.json", b"")
+        await store.write_new("other.json", b"")
         keys = await store.list_prefix("queues/")
         assert sorted(keys) == ["queues/a.json", "queues/b.json"]
