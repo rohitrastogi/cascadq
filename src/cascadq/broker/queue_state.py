@@ -34,6 +34,8 @@ class FlushWaiter:
     Callers check the result via the event and error slot.
     """
 
+    __slots__ = ("_error", "_event")
+
     def __init__(self) -> None:
         self._event = asyncio.Event()
         self._error: Exception | None = None
@@ -90,6 +92,13 @@ class QueueState:
         heapq.heapify(self._pending_heap)
         self._push_event = asyncio.Event()
         self._sorted_task_ids: list[str] | None = None
+        # Compile the JSON Schema validator once rather than on every push.
+        schema = self._metadata.payload_schema
+        if schema:
+            cls = jsonschema.validators.validator_for(schema)
+            self._schema_validator: jsonschema.protocols.Validator | None = cls(schema)
+        else:
+            self._schema_validator = None
 
     @property
     def metadata(self) -> QueueMetadata:
@@ -110,10 +119,9 @@ class QueueState:
         if existing is not None:
             return self._append_waiter()
 
-        schema = self._metadata.payload_schema
-        if schema:
+        if self._schema_validator is not None:
             try:
-                jsonschema.validate(payload, schema)
+                self._schema_validator.validate(payload)
             except jsonschema.ValidationError as e:
                 raise PayloadValidationError(str(e.message)) from e
 
