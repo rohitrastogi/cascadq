@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 
 import jsonschema
@@ -32,8 +34,6 @@ class FlushWaiter:
     """
 
     def __init__(self) -> None:
-        import asyncio
-
         self._event = asyncio.Event()
         self._error: Exception | None = None
 
@@ -133,12 +133,12 @@ class QueueState:
         return self._append_waiter()
 
     def timeout_expired_claims(
-        self, now: float, timeout_seconds: float, next_task_id_fn: callable
+        self, now: float, timeout_seconds: float, next_task_id_fn: Callable[[], str]
     ) -> None:
         """Re-queue tasks whose heartbeat has expired.
 
-        Re-queued tasks get negative sequence numbers so they sort
-        to the front of the queue (before all pending tasks).
+        Re-queued tasks get sequence numbers lower than all current tasks
+        so they sort to the front of the queue.
         """
         expired = [
             t
@@ -147,45 +147,47 @@ class QueueState:
             and t.last_heartbeat is not None
             and (now - t.last_heartbeat) > timeout_seconds
         ]
+        if not expired:
+            return
+        # Compute the base sequence once, then decrement for each re-queued task
+        next_seq = min(
+            (t.sequence for t in self._tasks.values()), default=0
+        ) - 1
         for task in expired:
             logger.info(
                 "Heartbeat timeout for task %s in queue %s, re-queuing",
                 task.task_id,
                 self.name,
             )
-            # Remove the expired claimed task
             del self._tasks[task.task_id]
-            # Compute a negative sequence number lower than all current tasks
-            min_seq = min(
-                (t.sequence for t in self._tasks.values()), default=0
-            )
             new_id = next_task_id_fn()
             new_task = Task(
                 task_id=new_id,
-                sequence=min_seq - 1,
+                sequence=next_seq,
                 created_at=task.created_at,
                 status=TaskStatus.pending,
                 payload=task.payload,
             )
             self._tasks[new_id] = new_task
-            self._dirty = True
+            next_seq -= 1
+        self._dirty = True
 
     def compact(self) -> None:
         """Remove completed tasks from state."""
-        before = len(self._tasks)
-        self._tasks = {
-            tid: t
-            for tid, t in self._tasks.items()
-            if t.status != TaskStatus.completed
-        }
-        removed = before - len(self._tasks)
-        if removed > 0:
-            logger.info(
-                "Compacted %d completed tasks from queue %s",
-                removed,
-                self.name,
-            )
-            self._dirty = True
+        completed = [
+            tid for tid, t in self._tasks.items()
+            if t.status == TaskStatus.completed
+        ]
+        if not completed:
+            return
+        for tid in completed:
+            del self._tasks[tid]
+        logger.info(
+            "Compacted %d completed tasks from queue %s",
+            len(completed),
+            self.name,
+        )
+        self._dirty = True
 
     def snapshot(self) -> QueueFile:
         """Return the current state as an immutable QueueFile."""

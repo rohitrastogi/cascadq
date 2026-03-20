@@ -21,7 +21,7 @@ class InMemoryObjectStore:
 
     async def write(
         self, key: str, data: bytes, expected_version: VersionToken
-    ) -> None:
+    ) -> VersionToken:
         if key in self._conflict_keys:
             self._conflict_keys.discard(key)
             raise ConflictError(f"injected conflict for key={key!r}")
@@ -33,12 +33,15 @@ class InMemoryObjectStore:
                 f"version mismatch for key={key!r}: "
                 f"expected={expected_version}, current={current_version}"
             )
-        self._store[key] = (data, current_version + 1)
+        new_version = current_version + 1
+        self._store[key] = (data, new_version)
+        return new_version
 
-    async def write_new(self, key: str, data: bytes) -> None:
+    async def write_new(self, key: str, data: bytes) -> VersionToken:
         if key in self._store:
             raise ConflictError(f"key already exists: {key!r}")
         self._store[key] = (data, 1)
+        return 1
 
     async def delete(self, key: str) -> None:
         self._store.pop(key, None)
