@@ -19,6 +19,7 @@ class PushRequest(BaseModel):
 
 class ClaimRequest(BaseModel):
     idempotency_key: str | None = None
+    timeout_seconds: float | None = None
 
 
 class HeartbeatRequest(BaseModel):

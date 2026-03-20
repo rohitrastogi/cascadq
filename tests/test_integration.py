@@ -72,7 +72,7 @@ class TestFIFOOrdering:
         async with claimed:
             pass
 
-        result = await client.claim("work")
+        result = await client.claim("work", timeout_seconds=0)
         assert result is None
 
 

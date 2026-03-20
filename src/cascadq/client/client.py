@@ -98,8 +98,16 @@ class CascadqClient:
             expected_status=204,
         )
 
-    async def claim(self, queue_name: str) -> ClaimedTask | None:
-        """Claim the next pending task, or return None if the queue is empty.
+    async def claim(
+        self,
+        queue_name: str,
+        timeout_seconds: float | None = None,
+    ) -> ClaimedTask | None:
+        """Claim the next pending task.
+
+        Blocks until a task is available (up to *timeout_seconds*).
+        Returns ``None`` when *timeout_seconds* expires with no task.
+        Without a timeout, blocks indefinitely.
 
         Returns a ClaimedTask context manager that sends heartbeats
         in the background.
@@ -109,10 +117,13 @@ class CascadqClient:
             BrokerFencedError: Broker is fenced (after retries).
         """
         idempotency_key = uuid4().hex
+        body: dict[str, Any] = {"idempotency_key": idempotency_key}
+        if timeout_seconds is not None:
+            body["timeout_seconds"] = timeout_seconds
         resp = await self._request(
             "POST",
             f"/queues/{queue_name}/claim",
-            json={"idempotency_key": idempotency_key},
+            json=body,
             expected_status=(200, 204),
         )
         if resp.status_code == 204:
