@@ -24,3 +24,17 @@ class ClientConfig(BaseModel, frozen=True):
     max_retries: int = 3
     retry_base_delay_seconds: float = 0.5
     retry_max_delay_seconds: float = 30.0
+
+
+class S3Config(BaseModel, frozen=True):
+    """S3-compatible storage configuration.
+
+    Set ``endpoint_url`` for non-AWS services (R2, MinIO, etc.).
+    Leave it as ``None`` for standard AWS S3.
+    """
+
+    bucket: str
+    endpoint_url: str | None = None
+    access_key_id: str
+    secret_access_key: str
+    region: str = "auto"
