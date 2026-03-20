@@ -9,7 +9,12 @@ from httpx import ASGITransport, AsyncClient
 from cascadq.broker.broker import Broker
 from cascadq.client.client import CascadqClient
 from cascadq.config import BrokerConfig, ClientConfig
-from cascadq.errors import BrokerFencedError, PayloadValidationError, QueueNotFoundError
+from cascadq.errors import (
+    BrokerFencedError,
+    FlushExhaustedError,
+    PayloadValidationError,
+    QueueNotFoundError,
+)
 from cascadq.server.app import create_app
 from tests.support import FaultInjectingStore
 
@@ -103,16 +108,74 @@ class TestWorkerFailure:
 
 
 class TestBrokerFencing:
-    async def test_fenced_broker_rejects_requests(
+    async def test_fenced_queue_does_not_block_other_queues(
         self, client: CascadqClient, memory_store: FaultInjectingStore
     ) -> None:
         await client.create_queue("work")
+        await client.create_queue("healthy")
 
-        # Inject a CAS conflict to fence the broker
+        # Inject a CAS conflict to fence only the work queue.
         memory_store.inject_conflict("queues/work.json")
 
         with pytest.raises(BrokerFencedError):
             await client.push("work", {"x": 1})
+
+        await client.push("healthy", {"x": 2})
+        claimed = await client.claim("healthy")
+        assert claimed is not None
+        async with claimed:
+            pass
+
+    async def test_flush_exhaustion_recovers_in_background(
+        self, memory_store: FaultInjectingStore,
+    ) -> None:
+        """After flush exhaustion, the queue recovers automatically
+        in the background without client intervention."""
+        config = BrokerConfig(
+            heartbeat_timeout_seconds=5.0,
+            heartbeat_check_interval_seconds=100.0,
+            compaction_interval_seconds=100.0,
+            max_consecutive_flush_failures=2,
+            flush_retry_delay_seconds=0.01,
+            flush_recovery_interval_seconds=0.1,
+        )
+        broker = Broker(store=memory_store, config=config)
+        await broker.start()
+        app = create_app(store=memory_store, config=config, broker=broker)
+        app.state.broker = broker
+        transport = ASGITransport(app=app)
+        http_client = AsyncClient(transport=transport, base_url="http://test")
+        client_config = ClientConfig(
+            base_url="http://test",
+            heartbeat_interval_seconds=0.1,
+            max_retries=0,
+        )
+        client = CascadqClient(config=client_config, http_client=http_client)
+        try:
+            await client.create_queue("work")
+            memory_store.inject_transient_error("queues/work.json", count=2)
+
+            with pytest.raises(FlushExhaustedError):
+                await client.push("work", {"x": 1})
+
+            # Queue recovers in the background — retry until it accepts
+            for _ in range(50):
+                try:
+                    await client.push("work", {"x": 2})
+                    break
+                except FlushExhaustedError:
+                    await asyncio.sleep(0.1)
+            else:
+                pytest.fail("queue did not recover within timeout")
+
+            claimed = await client.claim("work")
+            assert claimed is not None
+            assert claimed.payload == {"x": 2}
+            async with claimed:
+                pass
+        finally:
+            await client.close()
+            await broker.stop()
 
 
 class TestPayloadValidation:
@@ -190,6 +253,30 @@ class TestSlowFlushResilience:
 
         result = await client.claim("q", timeout_seconds=0)
         assert result is None
+
+    async def test_slow_queue_flush_does_not_block_other_queue(
+        self, slow_flush_client: tuple[CascadqClient, FaultInjectingStore],
+    ) -> None:
+        """A slow flush on one queue should not delay claim/finish on another."""
+        client, store = slow_flush_client
+        await client.create_queue("slow")
+        await client.create_queue("fast")
+        await client.push("slow", {"x": 1})
+        await client.push("fast", {"x": 2})
+
+        store.inject_write_delay("queues/slow.json", 0.8)
+        slow_claim = asyncio.create_task(client.claim("slow"))
+
+        await asyncio.sleep(0.05)
+        fast_claim = await asyncio.wait_for(client.claim("fast"), timeout=0.3)
+        assert fast_claim is not None
+        async with fast_claim:
+            pass
+
+        slow_task = await asyncio.wait_for(slow_claim, timeout=2.0)
+        assert slow_task is not None
+        async with slow_task:
+            pass
 
     async def test_slow_finish_flush_heartbeats_keep_task_alive(
         self, slow_flush_client: tuple[CascadqClient, FaultInjectingStore],

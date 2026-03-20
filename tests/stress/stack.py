@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import mkstemp
 
 import httpx
 
@@ -43,9 +45,9 @@ async def stress_stack(
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 
-    import tempfile
-    server_log = Path(tempfile.mktemp(suffix=".server.log"))
-    server_log_fh = open(server_log, "w")
+    server_log_fd, server_log_path = mkstemp(suffix=".server.log")
+    server_log = Path(server_log_path)
+    server_log_fh = os.fdopen(server_log_fd, "w")
     logger.info("Server log: %s", server_log)
     server_proc = subprocess.Popen(
         [

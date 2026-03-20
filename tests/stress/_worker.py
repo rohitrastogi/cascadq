@@ -87,6 +87,7 @@ async def _run_consumer(config: dict) -> None:
     delay = config["processing_delay"]
     jitter = config["processing_jitter"]
     timeout = config["claim_timeout_seconds"]
+    abandon_backoff = config["abandon_backoff_seconds"]
 
     try:
         with open(config["event_file"], "w", buffering=1) as ef:
@@ -106,6 +107,7 @@ async def _run_consumer(config: dict) -> None:
                         ef, "consumer_abandoned_claim", queue, lid,
                         task_id=claimed.task_id, worker_id=wid,
                     )
+                    await asyncio.sleep(abandon_backoff)
                     continue
 
                 async with claimed:
