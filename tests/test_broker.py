@@ -101,7 +101,7 @@ class TestPushClaimFinish:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
         with pytest.raises(QueueEmptyError):
-            await broker.claim("q")
+            await broker.claim("q", timeout_seconds=0)
         await broker.stop()
 
     async def test_push_to_nonexistent_queue_raises(

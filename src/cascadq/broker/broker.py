@@ -17,6 +17,7 @@ from cascadq.errors import (
     BrokerFencedError,
     ConflictError,
     QueueAlreadyExistsError,
+    QueueEmptyError,
     QueueNotFoundError,
 )
 from cascadq.models import (
@@ -179,15 +180,39 @@ class Broker:
         self,
         queue_name: str,
         idempotency_key: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> Task:
-        """Claim the next pending task. Blocks until the mutation is flushed."""
+        """Claim the next pending task.
+
+        Blocks until a task is available (up to *timeout_seconds*).
+        If *timeout_seconds* expires with no task, raises QueueEmptyError.
+        Without a timeout, blocks indefinitely.
+        """
         self._check_fenced()
         state = self._get_state(queue_name)
-        now = self._clock()
-        task, waiter = state.claim(now, idempotency_key)
-        self._get_coordinator().notify()
-        await waiter.wait()
-        return task
+        deadline = (
+            self._clock() + timeout_seconds
+            if timeout_seconds is not None
+            else None
+        )
+        while True:
+            now = self._clock()
+            try:
+                task, waiter = state.claim(now, idempotency_key)
+                self._get_coordinator().notify()
+                await waiter.wait()
+                return task
+            except QueueEmptyError as empty:
+                remaining = None
+                if deadline is not None:
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        raise
+                try:
+                    await state.wait_for_push(remaining)
+                except TimeoutError:
+                    raise empty from None
+                self._check_fenced()
 
     async def heartbeat(self, queue_name: str, task_id: str) -> None:
         """Update heartbeat for a claimed task. Blocks until flushed."""
