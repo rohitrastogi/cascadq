@@ -294,6 +294,9 @@ class ClaimedTask:
             await asyncio.sleep(self._heartbeat_interval)
             try:
                 await self._client._heartbeat(self._queue_name, self.task_id)
+            except (TaskNotClaimedError, TaskNotFoundError):
+                # Task was finished or re-queued — stop silently.
+                return
             except (httpx.HTTPError, CascadqError):
                 logger.warning(
                     "Heartbeat failed for task %s", self.task_id,

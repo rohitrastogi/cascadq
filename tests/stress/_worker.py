@@ -90,10 +90,14 @@ async def _run_consumer(config: dict) -> None:
 
     try:
         with open(config["event_file"], "w", buffering=1) as ef:
+            task_num = 0
             while True:
+                t0 = time.time()
                 claimed = await client.claim(queue, timeout_seconds=timeout)
+                claim_ms = (time.time() - t0) * 1000
                 if claimed is None:
                     break
+                task_num += 1
 
                 lid = claimed.payload["logical_id"]
                 _write_event(
@@ -108,10 +112,19 @@ async def _run_consumer(config: dict) -> None:
                     )
                     continue
 
+                t1 = time.time()
                 async with claimed:
                     sleep_time = delay + random.uniform(0, jitter)
                     if sleep_time > 0:
                         await asyncio.sleep(sleep_time)
+                finish_ms = (time.time() - t1) * 1000
+
+                if claim_ms > 2000 or finish_ms > 2000:
+                    print(
+                        f"{wid} task#{task_num}: "
+                        f"claim={claim_ms:.0f}ms finish={finish_ms:.0f}ms",
+                        file=sys.stderr, flush=True,
+                    )
 
                 _write_event(
                     ef, "finish_succeeded", queue, lid,
