@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from time import time
 
 from cascadq.broker.flush import FlushCoordinator
 from cascadq.broker.queue_state import QueueState
@@ -19,10 +21,12 @@ class CompactionWorker:
         queue_states: dict[str, QueueState],
         coordinator: FlushCoordinator,
         interval_seconds: float,
+        clock: Callable[[], float] = time,
     ) -> None:
         self._queue_states = queue_states
         self._coordinator = coordinator
         self._interval = interval_seconds
+        self._clock = clock
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -42,10 +46,11 @@ class CompactionWorker:
             await asyncio.sleep(self._interval)
             if self._coordinator.is_fenced:
                 return
+            now = self._clock()
             any_compacted = False
             for state in self._queue_states.values():
                 before = state.is_dirty
-                state.compact()
+                state.compact(now)
                 if not before and state.is_dirty:
                     any_compacted = True
             if any_compacted:

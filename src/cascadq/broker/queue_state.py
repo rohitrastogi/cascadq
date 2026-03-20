@@ -16,6 +16,7 @@ from cascadq.errors import (
     TaskNotFoundError,
 )
 from cascadq.models import (
+    IdempotencyRecord,
     QueueFile,
     QueueMetadata,
     Task,
@@ -62,12 +63,16 @@ class QueueState:
         name: str,
         queue_file: QueueFile,
         version: VersionToken,
+        idempotency_ttl_seconds: float = 300.0,
     ) -> None:
         self.name = name
         self._metadata = queue_file.metadata
         self._next_sequence = queue_file.next_sequence
         self._compacted_through_sequence = queue_file.compacted_through_sequence
-        self._idempotency_keys: dict[str, str] = dict(queue_file.idempotency_keys)
+        self._idempotency_ttl = idempotency_ttl_seconds
+        self._idempotency_keys: dict[str, IdempotencyRecord] = dict(
+            queue_file.idempotency_keys
+        )
         self._tasks: dict[str, Task] = {t.task_id: t for t in queue_file.tasks}
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
@@ -98,7 +103,7 @@ class QueueState:
         if idempotency_key is not None:
             existing = self._idempotency_keys.get(idempotency_key)
             if existing is not None:
-                return existing, self._append_waiter()
+                return existing.task_id, self._append_waiter()
 
         schema = self._metadata.payload_schema
         if schema:
@@ -118,7 +123,9 @@ class QueueState:
         self._tasks[task.task_id] = task
         heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
         if idempotency_key is not None:
-            self._idempotency_keys[idempotency_key] = task_id
+            self._idempotency_keys[idempotency_key] = IdempotencyRecord(
+                task_id=task_id, created_at=now,
+            )
         self._dirty = True
         return task_id, self._append_waiter()
 
@@ -214,25 +221,28 @@ class QueueState:
             next_seq -= 1
         self._dirty = True
 
-    def compact(self) -> None:
-        """Remove completed tasks and rebuild the pending heap."""
+    def compact(self, now: float) -> None:
+        """Remove completed tasks and expired idempotency keys."""
         completed = [
             t for t in self._tasks.values()
             if t.status == TaskStatus.completed
         ]
-        if not completed:
+        # Expire idempotency keys older than the TTL
+        cutoff = now - self._idempotency_ttl
+        expired_keys = [
+            k for k, r in self._idempotency_keys.items()
+            if r.created_at < cutoff
+        ]
+        if not completed and not expired_keys:
             return
-        max_seq = max(t.sequence for t in completed)
-        if max_seq > self._compacted_through_sequence:
-            self._compacted_through_sequence = max_seq
-        compacted_ids = {t.task_id for t in completed}
-        for t in completed:
-            del self._tasks[t.task_id]
-        # Remove idempotency keys whose tasks were compacted
-        self._idempotency_keys = {
-            k: v for k, v in self._idempotency_keys.items()
-            if v not in compacted_ids
-        }
+        if completed:
+            max_seq = max(t.sequence for t in completed)
+            if max_seq > self._compacted_through_sequence:
+                self._compacted_through_sequence = max_seq
+            for t in completed:
+                del self._tasks[t.task_id]
+        for k in expired_keys:
+            del self._idempotency_keys[k]
         # Rebuild the heap to discard stale entries that accumulate
         # from claimed tasks and heartbeat-timeout re-queues.
         self._pending_heap = [

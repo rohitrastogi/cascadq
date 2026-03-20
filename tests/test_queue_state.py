@@ -87,7 +87,7 @@ class TestClaimFinishLifecycle:
         state.push("t1", {}, now=100.0)
         state.claim("w1", now=200.0)
         state.finish("t1", sequence=0)
-        state.compact()
+        state.compact(now=300.0)
         # t1 is gone, but sequence 0 <= compacted_through_sequence (0)
         state.finish("t1", sequence=0)
 
@@ -97,7 +97,7 @@ class TestClaimFinishLifecycle:
         state.push("t1", {}, now=100.0)
         state.claim("w1", now=200.0)
         state.finish("t1", sequence=0)
-        state.compact()
+        state.compact(now=300.0)
         # Watermark is now 0.  Sequence 5 is above it → real error.
         with pytest.raises(TaskNotFoundError):
             state.finish("bogus", sequence=5)
@@ -164,7 +164,7 @@ class TestCompaction:
         state.claim("w1", now=200.0)
         state.finish("t1", sequence=0)
 
-        state.compact()
+        state.compact(now=300.0)
         snapshot = state.snapshot()
         assert len(snapshot.tasks) == 1
         assert snapshot.tasks[0].task_id == "t2"
@@ -173,8 +173,17 @@ class TestCompaction:
         state = _make_state()
         state.push("t1", {}, now=100.0)
         state.mark_clean()
-        state.compact()
+        state.compact(now=200.0)
         assert not state.is_dirty
+
+    def test_idempotency_key_ttl_cleanup(self) -> None:
+        """Idempotency keys older than the TTL are removed during compaction."""
+        state = _make_state()
+        state.push("t1", {}, now=100.0, idempotency_key="key1")
+        # Compact well past the 300s TTL
+        state.compact(now=500.0)
+        # Key should be expired
+        assert "key1" not in state.snapshot().idempotency_keys
 
 
 class TestPayloadValidation:

@@ -68,7 +68,10 @@ class Broker:
             )
             data, version = await self._store.read(key)
             qf = deserialize_queue_file(data)
-            state = QueueState(name=name, queue_file=qf, version=version)
+            state = QueueState(
+                name=name, queue_file=qf, version=version,
+                idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
+            )
             self._queue_states[name] = state
             logger.info("Discovered queue %s with %d tasks", name, len(qf.tasks))
 
@@ -83,6 +86,7 @@ class Broker:
             self._queue_states,
             self._coordinator,
             self._config.compaction_interval_seconds,
+            clock=self._clock,
         )
         self._heartbeat = HeartbeatWorker(
             self._queue_states,
@@ -139,7 +143,10 @@ class Broker:
             raise QueueAlreadyExistsError(
                 f"queue {name!r} already exists"
             ) from e
-        state = QueueState(name=name, queue_file=qf, version=version)
+        state = QueueState(
+            name=name, queue_file=qf, version=version,
+            idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
+        )
         self._queue_states[name] = state
         logger.info("Created queue %s", name)
 
@@ -153,19 +160,28 @@ class Broker:
         del self._queue_states[name]
         logger.info("Deleted queue %s", name)
 
-    async def push(self, queue_name: str, payload: dict) -> str:
+    async def push(
+        self,
+        queue_name: str,
+        payload: dict,
+        idempotency_key: str | None = None,
+    ) -> str:
         """Push a task to a queue. Blocks until the mutation is flushed.
 
-        Returns the task_id assigned to the new task.
+        Returns the task_id assigned to the new task.  If an
+        *idempotency_key* is provided and was already used, the
+        original task_id is returned without creating a duplicate.
         """
         self._check_fenced()
         state = self._get_state(queue_name)
         task_id = uuid4().hex
         now = self._clock()
-        waiter = state.push(task_id, payload, now)
+        resolved_id, waiter = state.push(
+            task_id, payload, now, idempotency_key,
+        )
         self._get_coordinator().notify()
         await waiter.wait()
-        return task_id
+        return resolved_id
 
     async def claim(self, queue_name: str, consumer_id: str) -> Task:
         """Claim the next pending task. Blocks until the mutation is flushed."""

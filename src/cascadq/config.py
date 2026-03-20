@@ -13,6 +13,7 @@ class BrokerConfig(BaseModel, frozen=True):
     compaction_interval_seconds: float = 60.0
     max_consecutive_flush_failures: int = 3
     flush_retry_delay_seconds: float = 1.0
+    idempotency_ttl_seconds: float = 300.0
     storage_prefix: str = ""
 
 
