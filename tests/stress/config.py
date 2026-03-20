@@ -32,3 +32,4 @@ class ScenarioConfig:
     compaction_interval_seconds: float = 100.0
     processing_delay_seconds: float = 0.0
     processing_jitter_seconds: float = 0.0
+    claim_timeout_seconds: float = 10.0

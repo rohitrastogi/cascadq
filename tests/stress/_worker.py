@@ -86,18 +86,14 @@ async def _run_consumer(config: dict) -> None:
     behavior = config["behavior"]
     delay = config["processing_delay"]
     jitter = config["processing_jitter"]
-    max_empty = config["max_empty_claims"]
+    timeout = config["claim_timeout_seconds"]
 
     try:
-        empty_streak = 0
         with open(config["event_file"], "w", buffering=1) as ef:
-            while empty_streak < max_empty:
-                claimed = await client.claim(queue)
+            while True:
+                claimed = await client.claim(queue, timeout_seconds=timeout)
                 if claimed is None:
-                    empty_streak += 1
-                    await asyncio.sleep(0.05)
-                    continue
-                empty_streak = 0
+                    break
 
                 lid = claimed.payload["logical_id"]
                 _write_event(
