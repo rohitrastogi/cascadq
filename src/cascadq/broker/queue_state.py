@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
 from collections.abc import Callable
 
@@ -69,6 +70,12 @@ class QueueState:
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
         self._dirty = False
+        self._pending_heap: list[tuple[int, str]] = [
+            (t.sequence, t.task_id)
+            for t in queue_file.tasks
+            if t.status == TaskStatus.pending
+        ]
+        heapq.heapify(self._pending_heap)
 
     @property
     def metadata(self) -> QueueMetadata:
@@ -92,18 +99,15 @@ class QueueState:
         )
         self._next_sequence += 1
         self._tasks[task.task_id] = task
+        heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
         self._dirty = True
         return self._append_waiter()
 
     def claim(self, consumer_id: str, now: float) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number."""
-        pending = [
-            t for t in self._tasks.values() if t.status == TaskStatus.pending
-        ]
-        if not pending:
+        task = self._pop_next_pending()
+        if task is None:
             raise QueueEmptyError(f"no pending tasks in queue {self.name!r}")
-        pending.sort(key=lambda t: t.sequence)
-        task = pending[0]
         claimed = task.claim(consumer_id, now)
         self._tasks[claimed.task_id] = claimed
         self._dirty = True
@@ -148,10 +152,15 @@ class QueueState:
         ]
         if not expired:
             return
-        # Compute the base sequence once, then decrement for each re-queued task
-        next_seq = min(
-            (t.sequence for t in self._tasks.values()), default=0
-        ) - 1
+        # Place re-queued tasks ahead of all pending tasks.
+        # The heap minimum is O(1); fall back to scanning _tasks
+        # only when the heap is empty (all tasks are claimed/completed).
+        if self._pending_heap:
+            next_seq = self._pending_heap[0][0] - 1
+        else:
+            next_seq = min(
+                (t.sequence for t in self._tasks.values()), default=0
+            ) - 1
         for task in expired:
             logger.info(
                 "Heartbeat timeout for task %s in queue %s, re-queuing",
@@ -168,11 +177,12 @@ class QueueState:
                 payload=task.payload,
             )
             self._tasks[new_id] = new_task
+            heapq.heappush(self._pending_heap, (next_seq, new_id))
             next_seq -= 1
         self._dirty = True
 
     def compact(self) -> None:
-        """Remove completed tasks from state."""
+        """Remove completed tasks and rebuild the pending heap."""
         completed = [
             tid for tid, t in self._tasks.items()
             if t.status == TaskStatus.completed
@@ -181,6 +191,14 @@ class QueueState:
             return
         for tid in completed:
             del self._tasks[tid]
+        # Rebuild the heap to discard stale entries that accumulate
+        # from claimed tasks and heartbeat-timeout re-queues.
+        self._pending_heap = [
+            (t.sequence, t.task_id)
+            for t in self._tasks.values()
+            if t.status == TaskStatus.pending
+        ]
+        heapq.heapify(self._pending_heap)
         logger.info(
             "Compacted %d completed tasks from queue %s",
             len(completed),
@@ -216,6 +234,19 @@ class QueueState:
 
     def mark_clean(self) -> None:
         self._dirty = False
+
+    def _pop_next_pending(self) -> Task | None:
+        """Pop the lowest-sequence pending task from the heap.
+
+        Skips stale entries where the task was claimed, finished,
+        or removed (e.g., by timeout re-queue of the original).
+        """
+        while self._pending_heap:
+            _seq, task_id = heapq.heappop(self._pending_heap)
+            task = self._tasks.get(task_id)
+            if task is not None and task.status == TaskStatus.pending:
+                return task
+        return None
 
     def _get_task(self, task_id: str) -> Task:
         task = self._tasks.get(task_id)
