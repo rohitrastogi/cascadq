@@ -252,21 +252,35 @@ class ClaimedTask:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        await self._stop_heartbeat()
-        if exc_type is None and not self._finished:
-            await self.finish()
+        try:
+            if exc_type is None and not self._finished:
+                try:
+                    await self.finish()
+                except TaskNotFoundError:
+                    logger.warning(
+                        "Task %s was re-queued before finish; "
+                        "another consumer will process it",
+                        self.task_id,
+                    )
+        finally:
+            await self._stop_heartbeat()
 
     async def finish(self) -> None:
-        """Mark the task as completed."""
+        """Mark the task as completed.
+
+        Heartbeats continue running until the finish RPC is durably
+        acknowledged, so the broker does not re-queue the task while
+        the completion flush is in flight.
+        """
         if self._finished:
             return
-        await self._stop_heartbeat()
         await self._client._finish(
             self._queue_name,
             self.task_id,
             self.sequence,
         )
         self._finished = True
+        await self._stop_heartbeat()
 
     async def _stop_heartbeat(self) -> None:
         if self._heartbeat_task is not None:
@@ -282,6 +296,20 @@ class ClaimedTask:
             await asyncio.sleep(self._heartbeat_interval)
             try:
                 await self._client._heartbeat(self._queue_name, self.task_id)
+            except TaskNotClaimedError:
+                if self._finished:
+                    return
+                logger.warning(
+                    "Heartbeat rejected for task %s, stopping heartbeat",
+                    self.task_id,
+                )
+                return
+            except TaskNotFoundError:
+                logger.warning(
+                    "Task %s not found during heartbeat, stopping heartbeat",
+                    self.task_id,
+                )
+                return
             except (httpx.HTTPError, CascadqError):
                 logger.warning(
                     "Heartbeat failed for task %s", self.task_id,
