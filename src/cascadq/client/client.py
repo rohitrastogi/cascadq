@@ -15,6 +15,7 @@ from cascadq.config import ClientConfig
 from cascadq.errors import (
     BrokerFencedError,
     CascadqError,
+    FlushExhaustedError,
     PayloadValidationError,
     QueueAlreadyExistsError,
     QueueNotFoundError,
@@ -309,9 +310,10 @@ _TASK_ERROR_MAP: dict[int, type[CascadqError]] = {
 
 # Maps the "code" field in the server's JSON error body to a client
 # exception. Used to disambiguate status codes that map to multiple
-# domain errors (e.g., 503 can be flush_failed or broker_fenced).
+# domain errors (e.g., 503 can be flush_exhausted or broker_fenced).
 _ERROR_CODE_OVERRIDE: dict[str, type[CascadqError]] = {
     "broker_fenced": BrokerFencedError,
+    "flush_exhausted": FlushExhaustedError,
 }
 
 

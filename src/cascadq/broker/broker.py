@@ -14,7 +14,6 @@ from cascadq.broker.heartbeat import HeartbeatWorker
 from cascadq.broker.queue_state import QueueState
 from cascadq.config import BrokerConfig
 from cascadq.errors import (
-    BrokerFencedError,
     ConflictError,
     QueueAlreadyExistsError,
     QueueEmptyError,
@@ -112,8 +111,8 @@ class Broker:
         logger.info("Broker %s stopped", self._broker_id)
 
     def _check_fenced(self) -> None:
-        if self.is_fenced:
-            raise BrokerFencedError("broker has been fenced by another instance")
+        if self._coordinator is not None and self._coordinator.is_fenced:
+            raise self._coordinator.shutdown_error  # type: ignore[misc]
 
     def _get_coordinator(self) -> FlushCoordinator:
         if self._coordinator is None:
