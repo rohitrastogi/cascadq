@@ -1,117 +1,83 @@
 # CAScadq
 
-Object-storage-backed task queue using compare-and-swap (CAS) for consistency.
+CAScadq is a single-broker task queue backed by object storage.
 
-CAScadq is a lightweight, async task queue that persists queue state as JSON objects in any S3-compatible object store. Instead of relying on a traditional database, it uses conditional writes (ETags / `If-Match`) to ensure only one broker is actively writing at a time, providing consistency without coordination infrastructure.
+The broker is stateless across restarts. Durable queue state lives in S3-compatible object storage as CAS-protected JSON snapshots.
 
-The design is heavily inspired by -- and in many places directly adapted from -- the approach described in turbopuffer's [*Building a Queue on Object Storage*](https://turbopuffer.com/blog/object-storage-queue) blog post by Dan Harrison. The core ideas are theirs: storing the entire queue as a single CAS-guarded JSON file, using a broker with a group-commit flush loop so write throughput scales with bandwidth rather than latency, fencing stale brokers on CAS conflict, and reclaiming dead work via heartbeat timeouts. CAScadq is essentially a from-scratch Python implementation of that design, repackaged as a general-purpose task queue with an HTTP API and pluggable storage backends.
+The core design is heavily inspired by turbopuffer's ["Building a Queue on Object Storage"](https://turbopuffer.com/blog/object-storage-queue): queue snapshots stored in object storage, compare-and-swap writes for consistency, a single active broker, and heartbeat-based recovery of abandoned work. CAScadq is a Python implementation of that approach with an HTTP API, Python client, and pluggable storage backends.
 
-## How it works
+## Overview
 
-- **Queue state is a single JSON object per queue**, stored at `queues/{name}.json`. Each object contains the full task list, metadata, and a monotonic sequence counter.
-- **Mutations are buffered in memory** and periodically flushed to object storage via a double-buffered flush loop. Client requests block until their mutation is persisted.
-- **CAS writes** ensure consistency: if another broker writes first, the flush detects a version mismatch and the broker **fences itself**, refusing further mutations.
-- **Heartbeat detection** re-queues claimed tasks whose consumers have gone silent, and **compaction** periodically removes completed tasks from state.
+CAScadq is designed around a small number of components:
+
+- one broker process
+- one object-store prefix
+- one JSON snapshot per queue at `queues/{name}.json`
+
+It does not require:
+
+- a database
+- local disk for durable state
+- a coordination service
+
+The broker keeps queue state in memory, serves the HTTP API, and flushes full queue snapshots to object storage.
 
 ## Architecture
 
-```
-+-----------+         +-----------------------------------+
-|  Client   |--HTTP-->|            Broker                  |
-+-----------+         |  +------------+ +---------------+  |
-                      |  |QueueState  | |QueueState     |  |
-                      |  |  (tasks)   | |  (tasks)      |  |
-                      |  +-----+------+ +------+--------+  |
-                      |        +--------+------+            |
-                      |        FlushCoordinator             |
-                      |         (CAS writes)                |
-                      |   CompactionWorker  HeartbeatWorker  |
-                      +----------+--------------------------+
-                                 |
-                      +----------v------------+
-                      |    Object Store       |
-                      |  (S3 / R2 / MinIO)    |
-                      +-----------------------+
-```
+This is a single active broker design.
 
-## Installation
+The broker:
 
-Requires Python 3.13+.
+- serves `create_queue`, `delete_queue`, `push`, `claim`, `heartbeat`, and `finish`
+- keeps queue state in memory
+- flushes queue snapshots with compare-and-swap writes
+- retries transient flush failures internally
+- fences itself on CAS conflict
+- runs background heartbeat-timeout recovery
+- runs background compaction of completed tasks
 
-```bash
-# Core install
-uv pip install -e .
+Each queue snapshot contains:
 
-# With S3 backend support
-uv pip install -e ".[s3]"
+- queue metadata
+- task list
+- next sequence number
+- compaction watermark
+- bounded idempotency state for producer retries
 
-# With dev dependencies (pytest, ruff)
-uv pip install -e ".[dev]"
-```
+## Semantics
 
-## Quickstart
+CAScadq provides at-least-once task processing.
 
-### Running the server
+Tasks move through:
 
-```python
-import uvicorn
-from cascadq.config import BrokerConfig
-from cascadq.server.app import create_app
-from cascadq.storage.memory import InMemoryObjectStore
+- `pending`
+- `claimed`
+- `completed`
 
-store = InMemoryObjectStore()
-app = create_app(store=store, config=BrokerConfig(port=8000))
+A claimed task may be re-queued if its lease expires.
 
-uvicorn.run(app, host="0.0.0.0", port=8000)
-```
+`push`, `claim`, and `finish` succeed only after the corresponding queue mutation is durably flushed to object storage.
 
-With S3-compatible storage:
+`claim` is blocking:
 
-```python
-from cascadq.config import S3Config
-from cascadq.storage.s3 import S3ObjectStore
+- if work is available, it returns a task
+- if no work is available, it waits
+- an optional timeout returns `204` / `None`
 
-s3_config = S3Config(
-    bucket="my-queue-bucket",
-    access_key_id="...",
-    secret_access_key="...",
-    endpoint_url="https://my-r2-endpoint.example.com",  # omit for AWS S3
-)
-store = S3ObjectStore(
-    bucket=s3_config.bucket,
-    access_key_id=s3_config.access_key_id,
-    secret_access_key=s3_config.secret_access_key,
-    endpoint_url=s3_config.endpoint_url,
-)
-```
+If a claimed task stops heartbeating:
 
-### Using the client
+- the task is re-queued automatically
 
-```python
-import asyncio
-from cascadq.client.client import CascadqClient
-from cascadq.config import ClientConfig
+## Tradeoffs
 
-async def main():
-    client = CascadqClient(ClientConfig(base_url="http://localhost:8000"))
+This design favors operational simplicity over horizontal scaling.
 
-    # Create a queue (optionally with a JSON Schema for payload validation)
-    await client.create_queue("emails")
+Constraints:
 
-    # Push a task
-    task_id = await client.push("emails", {"to": "user@example.com", "subject": "Hello"})
-
-    # Claim and process a task (heartbeats are sent automatically)
-    claimed = await client.claim("emails")
-    if claimed is not None:
-        async with claimed:
-            print(f"Processing task {claimed.task_id}: {claimed.payload}")
-            # Task is automatically finished when the context manager exits
-
-    await client.close()
-
-asyncio.run(main())
-```
+- one active broker
+- object-store latency affects `push`, `claim`, and `finish`
+- at-least-once processing rather than exactly-once processing
+- automatic retries are handled by the first-party client rather than exposed as part of the normal usage model
 
 ## HTTP API
 
@@ -119,56 +85,74 @@ All endpoints accept and return JSON.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/queues` | Create a queue. Body: `{"name": "...", "payload_schema": {...}}` |
+| `POST` | `/queues` | Create a queue |
 | `DELETE` | `/queues/{name}` | Delete a queue |
-| `POST` | `/queues/{name}/push` | Push a task. Body: `{"payload": {...}}` |
-| `POST` | `/queues/{name}/claim` | Claim the next pending task. Returns `204` if empty |
-| `POST` | `/queues/{name}/heartbeat` | Send heartbeat for a claimed task. Body: `{"task_id": "..."}` |
-| `POST` | `/queues/{name}/finish` | Mark a claimed task as completed. Body: `{"task_id": "..."}` |
+| `POST` | `/queues/{name}/push` | Enqueue a payload |
+| `POST` | `/queues/{name}/claim` | Block until a task is available, optionally with timeout |
+| `POST` | `/queues/{name}/heartbeat` | Renew a claim lease |
+| `POST` | `/queues/{name}/finish` | Mark a task completed |
 
-### Error responses
+Common status codes:
 
 | Status | Meaning |
 |--------|---------|
 | `404` | Queue or task not found |
 | `409` | Queue already exists, or task not in claimed state |
-| `422` | Payload validation failed (against queue's JSON Schema) |
-| `503` | Broker is fenced (another broker took over) |
+| `422` | Payload validation failed |
+| `503` | Broker fenced or unable to persist state |
 
-## Storage backends
+## Python Example
 
-CAScadq uses a pluggable `ObjectStore` protocol with two built-in implementations:
+```python
+import asyncio
 
-- **`InMemoryObjectStore`** -- dict-backed, for testing and development.
-- **`S3ObjectStore`** -- works with AWS S3, Cloudflare R2, MinIO, and any S3-compatible service. Uses `aiobotocore` for async access and conditional writes via `If-Match` / `If-None-Match` headers.
+from cascadq.client.client import CascadqClient
+from cascadq.config import ClientConfig
 
-## Configuration
 
-Configuration uses frozen Pydantic models.
+async def main() -> None:
+    client = CascadqClient(ClientConfig(base_url="http://localhost:8000"))
 
-**`BrokerConfig`** -- server-side settings:
-- `host` / `port` -- bind address (default `0.0.0.0:8000`)
-- `heartbeat_timeout_seconds` -- time before a claimed task is re-queued (default `30`)
-- `compaction_interval_seconds` -- how often completed tasks are removed (default `60`)
-- `storage_prefix` -- key prefix in object storage (default `""`)
+    await client.create_queue("emails")
+    await client.push("emails", {"to": "user@example.com", "subject": "Hello"})
 
-**`ClientConfig`** -- client-side settings:
-- `base_url` -- broker URL (default `http://localhost:8000`)
-- `heartbeat_interval_seconds` -- how often the client sends heartbeats (default `10`)
-- `max_retries` -- retry count for transient failures (default `3`)
+    claimed = await client.claim("emails", timeout_seconds=5.0)
+    if claimed is None:
+        return
 
-**`S3Config`** -- S3 backend settings:
-- `bucket`, `access_key_id`, `secret_access_key`, `endpoint_url`, `region`
+    async with claimed:
+        print(claimed.payload)
+
+    await client.close()
+
+
+asyncio.run(main())
+```
+
+## Installation
+
+Requires Python 3.13+.
+
+```bash
+uv pip install -e .
+```
+
+With S3 backend support:
+
+```bash
+uv pip install -e ".[s3]"
+```
+
+With development dependencies:
+
+```bash
+uv pip install -e ".[dev]"
+```
 
 ## Development
 
 ```bash
-# Install dev dependencies
-uv pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Lint
-ruff check src/ tests/
+uv run pytest
+uv run ruff check src/ tests/
+uv run ty check src/
 ```
