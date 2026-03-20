@@ -95,7 +95,7 @@ class TestPushClaimFinish:
         assert task.status == TaskStatus.claimed
         assert task.payload == {"url": "http://example.com"}
 
-        await broker.finish("q", task.task_id)
+        await broker.finish("q", task.task_id, task.sequence)
         await broker.stop()
 
     async def test_claim_empty_raises(

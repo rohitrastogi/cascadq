@@ -51,6 +51,7 @@ class QueueMetadata:
 class QueueFile:
     metadata: QueueMetadata
     next_sequence: int = 0
+    compacted_through_sequence: int = -1
     tasks: list[Task] = field(default_factory=list)
 
 
@@ -62,6 +63,7 @@ def serialize_queue_file(qf: QueueFile) -> bytes:
             "payload_schema": qf.metadata.payload_schema,
         },
         "next_sequence": qf.next_sequence,
+        "compacted_through_sequence": qf.compacted_through_sequence,
         "tasks": [
             {
                 "task_id": t.task_id,
@@ -100,6 +102,7 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
             payload_schema=meta.get("payload_schema", {}),
         ),
         next_sequence=data["next_sequence"],
+        compacted_through_sequence=data.get("compacted_through_sequence", -1),
         tasks=tasks,
     )
 

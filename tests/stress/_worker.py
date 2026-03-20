@@ -35,16 +35,24 @@ def _make_client(config: dict) -> Any:
     """Build a CascadqClient from worker config.
 
     Returns untyped to avoid top-level imports of cascadq (this script
-    must be runnable as a standalone subprocess).
+    must be runnable as a standalone subprocess).  Uses a 120s HTTP timeout
+    because real S3 flush cycles under high concurrency can be slow.
     """
+    import httpx
+
     from cascadq.client.client import CascadqClient
     from cascadq.config import ClientConfig
 
+    http_client = httpx.AsyncClient(
+        base_url=config["base_url"],
+        timeout=httpx.Timeout(120.0),
+    )
     return CascadqClient(
         config=ClientConfig(
             base_url=config["base_url"],
             heartbeat_interval_seconds=config["heartbeat_interval"],
-        )
+        ),
+        http_client=http_client,
     )
 
 

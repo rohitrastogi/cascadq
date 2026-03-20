@@ -99,7 +99,11 @@ async def claim(request: Request) -> Response:
         broker = _get_broker(request)
         task = await broker.claim(name, body.consumer_id)
         return JSONResponse(
-            {"task_id": task.task_id, "payload": task.payload},
+            {
+                "task_id": task.task_id,
+                "sequence": task.sequence,
+                "payload": task.payload,
+            },
             status_code=200,
         )
     except QueueEmptyError:
@@ -130,7 +134,7 @@ async def finish(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        await broker.finish(name, body.task_id)
+        await broker.finish(name, body.task_id, body.sequence)
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)

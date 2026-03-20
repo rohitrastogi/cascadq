@@ -186,10 +186,12 @@ class Broker:
         self._get_coordinator().notify()
         await waiter.wait()
 
-    async def finish(self, queue_name: str, task_id: str) -> None:
+    async def finish(
+        self, queue_name: str, task_id: str, sequence: int,
+    ) -> None:
         """Mark a claimed task as completed. Blocks until flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
-        waiter = state.finish(task_id)
+        waiter = state.finish(task_id, sequence)
         self._get_coordinator().notify()
         await waiter.wait()

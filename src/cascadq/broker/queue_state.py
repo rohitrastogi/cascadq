@@ -66,6 +66,7 @@ class QueueState:
         self.name = name
         self._metadata = queue_file.metadata
         self._next_sequence = queue_file.next_sequence
+        self._compacted_through_sequence = queue_file.compacted_through_sequence
         self._tasks: dict[str, Task] = {t.task_id: t for t in queue_file.tasks}
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
@@ -124,9 +125,23 @@ class QueueState:
         self._dirty = True
         return self._append_waiter()
 
-    def finish(self, task_id: str) -> FlushWaiter:
-        """Mark a claimed task as completed."""
-        task = self._get_task(task_id)
+    def finish(self, task_id: str, sequence: int) -> FlushWaiter:
+        """Mark a claimed task as completed.
+
+        Idempotent: finishing an already-completed task or a task that
+        has been compacted away (sequence <= watermark) is a no-op.
+        This handles retries where the first attempt succeeded but
+        the client never received the response.
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            if sequence <= self._compacted_through_sequence:
+                return self._append_waiter()
+            raise TaskNotFoundError(
+                f"task {task_id!r} not found in queue {self.name!r}"
+            )
+        if task.status == TaskStatus.completed:
+            return self._append_waiter()
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
                 f"task {task_id!r} is not claimed (status={task.status.value})"
@@ -184,13 +199,16 @@ class QueueState:
     def compact(self) -> None:
         """Remove completed tasks and rebuild the pending heap."""
         completed = [
-            tid for tid, t in self._tasks.items()
+            t for t in self._tasks.values()
             if t.status == TaskStatus.completed
         ]
         if not completed:
             return
-        for tid in completed:
-            del self._tasks[tid]
+        max_seq = max(t.sequence for t in completed)
+        if max_seq > self._compacted_through_sequence:
+            self._compacted_through_sequence = max_seq
+        for t in completed:
+            del self._tasks[t.task_id]
         # Rebuild the heap to discard stale entries that accumulate
         # from claimed tasks and heartbeat-timeout re-queues.
         self._pending_heap = [
@@ -212,6 +230,7 @@ class QueueState:
         return QueueFile(
             metadata=self._metadata,
             next_sequence=self._next_sequence,
+            compacted_through_sequence=self._compacted_through_sequence,
             tasks=tasks,
         )
 

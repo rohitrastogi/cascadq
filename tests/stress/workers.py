@@ -77,11 +77,17 @@ def run_workers(
     for proc, wid in processes:
         proc.wait()
         if proc.returncode != 0:
-            failures.append(f"{wid} exited with code {proc.returncode}")
+            stderr_path = tmpdir / f"{wid}.stderr.log"
+            stderr_tail = ""
+            if stderr_path.exists():
+                stderr_tail = stderr_path.read_text()[-500:]
+            failures.append(
+                f"{wid} exited with code {proc.returncode}: {stderr_tail}"
+            )
 
     if failures:
         raise RuntimeError(
-            f"{len(failures)} worker(s) failed: {'; '.join(failures)}"
+            f"{len(failures)} worker(s) failed:\n" + "\n---\n".join(failures)
         )
 
     # Collect events
@@ -103,10 +109,12 @@ def _spawn_worker(
     config_path = tmpdir / f"{worker_id}.config.json"
     config_path.write_text(json.dumps(config))
     logger.info("Spawning %s", worker_id)
+    stderr_path = tmpdir / f"{worker_id}.stderr.log"
+    stderr_file = open(stderr_path, "w")  # noqa: SIM115
     return subprocess.Popen(
         [sys.executable, _WORKER_SCRIPT, str(config_path)],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_file,
     )
 
 
@@ -150,12 +158,13 @@ def _resolve_behaviors(qs: QueueSpec) -> list[str]:
 def _compute_max_empty_claims(scenario: ScenarioConfig) -> int:
     """Compute how many consecutive empty claims before a consumer exits.
 
-    Must wait longer than heartbeat timeout + check interval so that
-    abandoned tasks have time to be re-queued and consumed.
+    Must wait longer than heartbeat timeout + check interval + flush
+    latency so that abandoned tasks have time to be re-queued via S3.
+    The 10s margin accounts for real S3 round-trip and flush batching.
     """
     wait_seconds = (
         scenario.heartbeat_timeout_seconds
         + scenario.heartbeat_check_interval_seconds
-        + 2.0  # margin
+        + 10.0  # margin for S3 flush latency
     )
-    return max(100, int(wait_seconds / 0.05))
+    return max(200, int(wait_seconds / 0.05))
