@@ -21,7 +21,15 @@ import sys
 from contextlib import AbstractAsyncContextManager
 from typing import cast
 
-import uvicorn
+try:
+    import uvicorn
+except ImportError:
+    print(
+        "Server dependencies not installed.\n"
+        'Install with: pip install "cascadq[server]"',
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 from cascadq.config import BrokerConfig
 from cascadq.server.app import create_app
