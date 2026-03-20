@@ -26,3 +26,4 @@ class HeartbeatRequest(BaseModel):
 
 class FinishRequest(BaseModel):
     task_id: str
+    sequence: int

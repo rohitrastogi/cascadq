@@ -64,8 +64,10 @@ class TestPushClaimFinish:
             "/queues/q/claim", json={"consumer_id": "w1"}
         )
         assert resp.status_code == 200
-        assert resp.json()["task_id"] == task_id
-        assert resp.json()["payload"] == {"url": "http://a"}
+        claim_data = resp.json()
+        assert claim_data["task_id"] == task_id
+        assert claim_data["payload"] == {"url": "http://a"}
+        sequence = claim_data["sequence"]
 
         resp = await client.post(
             "/queues/q/heartbeat", json={"task_id": task_id}
@@ -73,7 +75,8 @@ class TestPushClaimFinish:
         assert resp.status_code == 204
 
         resp = await client.post(
-            "/queues/q/finish", json={"task_id": task_id}
+            "/queues/q/finish",
+            json={"task_id": task_id, "sequence": sequence},
         )
         assert resp.status_code == 204
 
@@ -93,7 +96,8 @@ class TestPushClaimFinish:
         resp = await client.post("/queues/q/push", json={"payload": {}})
         task_id = resp.json()["task_id"]
         resp = await client.post(
-            "/queues/q/finish", json={"task_id": task_id}
+            "/queues/q/finish",
+            json={"task_id": task_id, "sequence": 0},
         )
         assert resp.status_code == 409
 

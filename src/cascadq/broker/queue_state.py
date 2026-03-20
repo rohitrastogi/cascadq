@@ -16,6 +16,7 @@ from cascadq.errors import (
     TaskNotFoundError,
 )
 from cascadq.models import (
+    IdempotencyRecord,
     QueueFile,
     QueueMetadata,
     Task,
@@ -62,10 +63,16 @@ class QueueState:
         name: str,
         queue_file: QueueFile,
         version: VersionToken,
+        idempotency_ttl_seconds: float = 300.0,
     ) -> None:
         self.name = name
         self._metadata = queue_file.metadata
         self._next_sequence = queue_file.next_sequence
+        self._compacted_through_sequence = queue_file.compacted_through_sequence
+        self._idempotency_ttl = idempotency_ttl_seconds
+        self._idempotency_keys: dict[str, IdempotencyRecord] = dict(
+            queue_file.idempotency_keys
+        )
         self._tasks: dict[str, Task] = {t.task_id: t for t in queue_file.tasks}
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
@@ -81,8 +88,23 @@ class QueueState:
     def metadata(self) -> QueueMetadata:
         return self._metadata
 
-    def push(self, task_id: str, payload: dict, now: float) -> FlushWaiter:
-        """Add a new task to the queue. Validates payload against schema."""
+    def push(
+        self,
+        task_id: str,
+        payload: dict,
+        now: float,
+        idempotency_key: str | None = None,
+    ) -> tuple[str, FlushWaiter]:
+        """Add a new task to the queue. Validates payload against schema.
+
+        Returns ``(task_id, waiter)``.  If *idempotency_key* was already
+        used, returns the original task_id without creating a duplicate.
+        """
+        if idempotency_key is not None:
+            existing = self._idempotency_keys.get(idempotency_key)
+            if existing is not None:
+                return existing.task_id, self._append_waiter()
+
         schema = self._metadata.payload_schema
         if schema:
             try:
@@ -100,8 +122,12 @@ class QueueState:
         self._next_sequence += 1
         self._tasks[task.task_id] = task
         heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
+        if idempotency_key is not None:
+            self._idempotency_keys[idempotency_key] = IdempotencyRecord(
+                task_id=task_id, created_at=now,
+            )
         self._dirty = True
-        return self._append_waiter()
+        return task_id, self._append_waiter()
 
     def claim(self, consumer_id: str, now: float) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number."""
@@ -124,9 +150,23 @@ class QueueState:
         self._dirty = True
         return self._append_waiter()
 
-    def finish(self, task_id: str) -> FlushWaiter:
-        """Mark a claimed task as completed."""
-        task = self._get_task(task_id)
+    def finish(self, task_id: str, sequence: int) -> FlushWaiter:
+        """Mark a claimed task as completed.
+
+        Idempotent: finishing an already-completed task or a task that
+        has been compacted away (sequence <= watermark) is a no-op.
+        This handles retries where the first attempt succeeded but
+        the client never received the response.
+        """
+        task = self._tasks.get(task_id)
+        if task is None:
+            if sequence <= self._compacted_through_sequence:
+                return self._append_waiter()
+            raise TaskNotFoundError(
+                f"task {task_id!r} not found in queue {self.name!r}"
+            )
+        if task.status == TaskStatus.completed:
+            return self._append_waiter()
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
                 f"task {task_id!r} is not claimed (status={task.status.value})"
@@ -181,16 +221,28 @@ class QueueState:
             next_seq -= 1
         self._dirty = True
 
-    def compact(self) -> None:
-        """Remove completed tasks and rebuild the pending heap."""
+    def compact(self, now: float) -> None:
+        """Remove completed tasks and expired idempotency keys."""
         completed = [
-            tid for tid, t in self._tasks.items()
+            t for t in self._tasks.values()
             if t.status == TaskStatus.completed
         ]
-        if not completed:
+        # Expire idempotency keys older than the TTL
+        cutoff = now - self._idempotency_ttl
+        expired_keys = [
+            k for k, r in self._idempotency_keys.items()
+            if r.created_at < cutoff
+        ]
+        if not completed and not expired_keys:
             return
-        for tid in completed:
-            del self._tasks[tid]
+        if completed:
+            max_seq = max(t.sequence for t in completed)
+            if max_seq > self._compacted_through_sequence:
+                self._compacted_through_sequence = max_seq
+            for t in completed:
+                del self._tasks[t.task_id]
+        for k in expired_keys:
+            del self._idempotency_keys[k]
         # Rebuild the heap to discard stale entries that accumulate
         # from claimed tasks and heartbeat-timeout re-queues.
         self._pending_heap = [
@@ -212,7 +264,9 @@ class QueueState:
         return QueueFile(
             metadata=self._metadata,
             next_sequence=self._next_sequence,
+            compacted_through_sequence=self._compacted_through_sequence,
             tasks=tasks,
+            idempotency_keys=dict(self._idempotency_keys),
         )
 
     def swap_write_buffer(self) -> list[FlushWaiter]:
@@ -223,6 +277,14 @@ class QueueState:
         buffer = self._write_buffer
         self._write_buffer = []
         return buffer
+
+    def prepend_waiters(self, waiters: list[FlushWaiter]) -> None:
+        """Re-insert waiters at the front of the write buffer.
+
+        Used by the flush coordinator to keep waiters pending after a
+        transient flush failure so they are re-collected on the next cycle.
+        """
+        self._write_buffer = waiters + self._write_buffer
 
     @property
     def is_dirty(self) -> bool:

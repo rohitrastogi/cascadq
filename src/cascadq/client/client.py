@@ -121,6 +121,7 @@ class CascadqClient:
             _client=self,
             _queue_name=queue_name,
             task_id=data["task_id"],
+            sequence=data["sequence"],
             payload=data["payload"],
             consumer_id=consumer_id,
             _heartbeat_interval=self._config.heartbeat_interval_seconds,
@@ -135,11 +136,13 @@ class CascadqClient:
             error_map=_TASK_ERROR_MAP,
         )
 
-    async def _finish(self, queue_name: str, task_id: str) -> None:
+    async def _finish(
+        self, queue_name: str, task_id: str, sequence: int,
+    ) -> None:
         await self._request(
             "POST",
             f"/queues/{queue_name}/finish",
-            json={"task_id": task_id},
+            json={"task_id": task_id, "sequence": sequence},
             expected_status=204,
             error_map=_TASK_ERROR_MAP,
         )
@@ -211,11 +214,13 @@ class ClaimedTask:
         _client: CascadqClient,
         _queue_name: str,
         task_id: str,
+        sequence: int,
         payload: dict,
         consumer_id: str,
         _heartbeat_interval: float,
     ) -> None:
         self.task_id = task_id
+        self.sequence = sequence
         self.payload = payload
         self.consumer_id = consumer_id
         self._client = _client
@@ -243,7 +248,7 @@ class ClaimedTask:
         if self._finished:
             return
         await self._stop_heartbeat()
-        await self._client._finish(self._queue_name, self.task_id)
+        await self._client._finish(self._queue_name, self.task_id, self.sequence)
         self._finished = True
 
     async def _stop_heartbeat(self) -> None:

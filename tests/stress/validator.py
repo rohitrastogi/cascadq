@@ -149,47 +149,53 @@ def _check_fifo(
     result: ValidationResult,
     events: tuple[Event, ...],
 ) -> None:
-    """First claim order must match push order within each queue.
+    """Per-producer FIFO: each producer's tasks are claimed in push order.
 
-    Push order is the canonical order of logical_ids as generated
-    (sorted by their numeric suffix), not by push_succeeded timestamps,
-    since multiple producers push concurrently and their wall-clock
-    ordering is non-deterministic.
+    With concurrent producers, the global push order is non-deterministic
+    (depends on network timing). But within a single producer's sequential
+    stream, the broker must preserve ordering.
     """
-    # Collect pushed logical_ids per queue (used to know the set, not order)
-    pushed_per_queue: dict[str, set[str]] = {}
+    # Group pushed logical_ids by producer, preserving push order
+    push_order_by_producer: dict[str, list[str]] = {}
     for e in events:
         if e.kind == EventKind.push_succeeded:
-            pushed_per_queue.setdefault(e.queue_name, set()).add(
+            push_order_by_producer.setdefault(e.worker_id, []).append(
                 e.logical_id
             )
 
-    # Canonical push order: sorted logical_ids (numeric suffix = intended FIFO)
-    push_order: dict[str, list[str]] = {
-        q: sorted(ids) for q, ids in pushed_per_queue.items()
-    }
-
-    # Build first-claim order per queue
-    first_claim_order: dict[str, list[str]] = {}
+    # Build first-claim position per queue
+    first_claim_position: dict[str, dict[str, int]] = {}
     seen: set[str] = set()
     for e in events:
         if e.kind == EventKind.claim_succeeded and e.logical_id not in seen:
             seen.add(e.logical_id)
-            first_claim_order.setdefault(e.queue_name, []).append(
-                e.logical_id
-            )
+            q_positions = first_claim_position.setdefault(e.queue_name, {})
+            q_positions[e.logical_id] = len(q_positions)
 
-    for queue, pushed in push_order.items():
-        claimed = first_claim_order.get(queue, [])
-        if pushed != claimed:
-            # Find first mismatch for a useful error message
-            for i, (p, c) in enumerate(zip(pushed, claimed, strict=False)):
-                if p != c:
-                    result.fail(
-                        f"FIFO violation on queue {queue!r} at position {i}: "
-                        f"expected {p}, got {c}"
-                    )
-                    break
+    # For each producer, verify its tasks' claim positions are monotonic
+    for producer_id, pushed_ids in push_order_by_producer.items():
+        if not pushed_ids:
+            continue
+        # Determine which queue this producer pushed to (all same queue)
+        queue = next(
+            e.queue_name
+            for e in events
+            if e.kind == EventKind.push_succeeded
+            and e.worker_id == producer_id
+        )
+        positions = first_claim_position.get(queue, {})
+        claim_positions = [
+            positions[lid] for lid in pushed_ids if lid in positions
+        ]
+        for i in range(len(claim_positions) - 1):
+            if claim_positions[i] > claim_positions[i + 1]:
+                result.fail(
+                    f"FIFO violation on queue {queue!r} for {producer_id}: "
+                    f"{pushed_ids[i]} (claim pos {claim_positions[i]}) "
+                    f"was claimed after "
+                    f"{pushed_ids[i + 1]} (claim pos {claim_positions[i + 1]})"
+                )
+                break
 
 
 def _check_queue_isolation(

@@ -48,10 +48,20 @@ class QueueMetadata:
 
 
 @dataclass(frozen=True)
+class IdempotencyRecord:
+    """Durable record of a push idempotency key and its creation time."""
+
+    task_id: str
+    created_at: float
+
+
+@dataclass(frozen=True)
 class QueueFile:
     metadata: QueueMetadata
     next_sequence: int = 0
+    compacted_through_sequence: int = -1
     tasks: list[Task] = field(default_factory=list)
+    idempotency_keys: dict[str, IdempotencyRecord] = field(default_factory=dict)
 
 
 def serialize_queue_file(qf: QueueFile) -> bytes:
@@ -62,6 +72,11 @@ def serialize_queue_file(qf: QueueFile) -> bytes:
             "payload_schema": qf.metadata.payload_schema,
         },
         "next_sequence": qf.next_sequence,
+        "compacted_through_sequence": qf.compacted_through_sequence,
+        "idempotency_keys": {
+            k: {"task_id": r.task_id, "created_at": r.created_at}
+            for k, r in qf.idempotency_keys.items()
+        },
         "tasks": [
             {
                 "task_id": t.task_id,
@@ -100,7 +115,12 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
             payload_schema=meta.get("payload_schema", {}),
         ),
         next_sequence=data["next_sequence"],
+        compacted_through_sequence=data.get("compacted_through_sequence", -1),
         tasks=tasks,
+        idempotency_keys={
+            k: IdempotencyRecord(task_id=v["task_id"], created_at=v["created_at"])
+            for k, v in data.get("idempotency_keys", {}).items()
+        },
     )
 
 
