@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from cascadq.errors import ConflictError
 from cascadq.storage.protocol import VersionToken
 
@@ -13,6 +15,7 @@ class InMemoryObjectStore:
         self._store: dict[str, tuple[bytes, int]] = {}
         self._conflict_keys: set[str] = set()
         self._error_keys: dict[str, int] = {}
+        self._write_delays: dict[str, float] = {}
 
     async def read(self, key: str) -> tuple[bytes, VersionToken]:
         if key not in self._store:
@@ -23,6 +26,9 @@ class InMemoryObjectStore:
     async def write(
         self, key: str, data: bytes, expected_version: VersionToken
     ) -> VersionToken:
+        delay = self._write_delays.pop(key, 0.0)
+        if delay > 0:
+            await asyncio.sleep(delay)
         remaining = self._error_keys.get(key, 0)
         if remaining > 0:
             if remaining == 1:
@@ -70,3 +76,11 @@ class InMemoryObjectStore:
         Useful for testing the flush coordinator's transient-failure path.
         """
         self._error_keys[key] = count
+
+    def inject_write_delay(self, key: str, delay_seconds: float) -> None:
+        """Make the next write() for *key* sleep before executing.
+
+        The delay is consumed on first use. Useful for testing client
+        timeout + retry idempotency.
+        """
+        self._write_delays[key] = delay_seconds
