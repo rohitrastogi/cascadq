@@ -47,7 +47,7 @@ class TestClientLifecycle:
         task_id = await client.push("q", {"url": "http://example.com"})
         assert isinstance(task_id, str)
 
-        claimed = await client.claim("q", "worker-1")
+        claimed = await client.claim("q")
         assert claimed is not None
         assert claimed.task_id == task_id
         assert claimed.payload == {"url": "http://example.com"}
@@ -60,7 +60,7 @@ class TestClientLifecycle:
     ) -> None:
         client, _ = server_client
         await client.create_queue("q")
-        result = await client.claim("q", "worker-1")
+        result = await client.claim("q")
         assert result is None
 
 
@@ -71,7 +71,7 @@ class TestClaimedTaskHeartbeat:
         client, _ = server_client
         await client.create_queue("q")
         await client.push("q", {"x": 1})
-        claimed = await client.claim("q", "worker-1")
+        claimed = await client.claim("q")
         assert claimed is not None
 
         async with claimed:
@@ -79,7 +79,7 @@ class TestClaimedTaskHeartbeat:
             await asyncio.sleep(0.25)
 
         # Task should be finished — claiming again should find nothing
-        result = await client.claim("q", "worker-1")
+        result = await client.claim("q")
         assert result is None
 
     async def test_explicit_finish_stops_heartbeat(
@@ -88,7 +88,7 @@ class TestClaimedTaskHeartbeat:
         client, _ = server_client
         await client.create_queue("q")
         await client.push("q", {"x": 1})
-        claimed = await client.claim("q", "worker-1")
+        claimed = await client.claim("q")
         assert claimed is not None
 
         async with claimed:

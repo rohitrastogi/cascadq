@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 from types import TracebackType
+from uuid import uuid4
 
 import httpx
 
@@ -21,44 +22,6 @@ from cascadq.errors import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Default mapping from HTTP status to domain error.
-# Methods override specific entries where the status is ambiguous (e.g. 409).
-_DEFAULT_ERROR_MAP: dict[int, type[CascadqError]] = {
-    404: QueueNotFoundError,
-    422: PayloadValidationError,
-    503: BrokerFencedError,
-}
-
-_QUEUE_CREATE_ERROR_MAP: dict[int, type[CascadqError]] = {
-    **_DEFAULT_ERROR_MAP,
-    409: QueueAlreadyExistsError,
-}
-
-_TASK_ERROR_MAP: dict[int, type[CascadqError]] = {
-    **_DEFAULT_ERROR_MAP,
-    404: TaskNotFoundError,
-    409: TaskNotClaimedError,
-}
-
-
-def _raise_for_status(
-    resp: httpx.Response,
-    error_map: dict[int, type[CascadqError]],
-) -> None:
-    """Translate an HTTP error response into a domain exception."""
-    error_cls = error_map.get(resp.status_code)
-    if error_cls is None:
-        raise httpx.HTTPStatusError(
-            f"Unexpected status {resp.status_code}: {resp.text}",
-            request=resp.request,
-            response=resp,
-        )
-    try:
-        detail = resp.json().get("error", resp.text)
-    except Exception:
-        detail = resp.text
-    raise error_cls(detail)
 
 
 class CascadqClient:
@@ -132,7 +95,7 @@ class CascadqClient:
         )
         return resp.json()["task_id"]
 
-    async def claim(self, queue_name: str, consumer_id: str) -> ClaimedTask | None:
+    async def claim(self, queue_name: str) -> ClaimedTask | None:
         """Claim the next pending task, or return None if the queue is empty.
 
         Returns a ClaimedTask context manager that sends heartbeats
@@ -145,7 +108,7 @@ class CascadqClient:
         resp = await self._request(
             "POST",
             f"/queues/{queue_name}/claim",
-            json={"consumer_id": consumer_id},
+            json={"consumer_id": uuid4().hex},
             expected_status=(200, 204),
         )
         if resp.status_code == 204:
@@ -296,3 +259,42 @@ class ClaimedTask:
                     "Heartbeat failed for task %s", self.task_id,
                     exc_info=True,
                 )
+
+
+# Private helpers — error maps and status-to-exception translation
+
+_DEFAULT_ERROR_MAP: dict[int, type[CascadqError]] = {
+    404: QueueNotFoundError,
+    422: PayloadValidationError,
+    503: BrokerFencedError,
+}
+
+_QUEUE_CREATE_ERROR_MAP: dict[int, type[CascadqError]] = {
+    **_DEFAULT_ERROR_MAP,
+    409: QueueAlreadyExistsError,
+}
+
+_TASK_ERROR_MAP: dict[int, type[CascadqError]] = {
+    **_DEFAULT_ERROR_MAP,
+    404: TaskNotFoundError,
+    409: TaskNotClaimedError,
+}
+
+
+def _raise_for_status(
+    resp: httpx.Response,
+    error_map: dict[int, type[CascadqError]],
+) -> None:
+    """Translate an HTTP error response into a domain exception."""
+    error_cls = error_map.get(resp.status_code)
+    if error_cls is None:
+        raise httpx.HTTPStatusError(
+            f"Unexpected status {resp.status_code}: {resp.text}",
+            request=resp.request,
+            response=resp,
+        )
+    try:
+        detail = resp.json().get("error", resp.text)
+    except Exception:
+        detail = resp.text
+    raise error_cls(detail)

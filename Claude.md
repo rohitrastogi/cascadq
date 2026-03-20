@@ -15,6 +15,7 @@
 - Prefer top-level imports. Use local imports only for optional dependencies or to defer unusually expensive imports on rare code paths. Do not use local imports to work around circular dependencies.
 
 ### Design
+- Before committing a public-facing module, review the public API surface: are internal details leaked? Are errors documented and translated into domain types? Would a caller find the API obvious without reading the implementation?
 - Use Pydantic models at untrusted boundaries where data must be parsed and validated, such as CLI input, config files, HTTP payloads, LLM outputs, or environment-derived configuration.
 - Prefer dataclasses for trusted internal state where the code can maintain invariants without repeated validation.
 - Design abstractions to be easy to test. Favor lightweight dependency injection so collaborators can be replaced in tests without patching internals.
@@ -49,7 +50,9 @@
 - Never block the event loop with blocking I/O or CPU-heavy work; offload that work explicitly.
 
 ### Workflow
-- Prefer one logical change per commit.
-- Each meaningful commit should have a clear description and should not mix unrelated concerns.
-- Use `pyproject.toml` for project metadata and dependency configuration.
-- Use `uv` for package management and environment management.
+- Make one logical change per commit. Separate unrelated fixes, refactors, and feature work into different commits.
+- When adding or materially changing production code, add or update tests in the same commit unless the change is purely mechanical and does not alter behavior.
+- Run /simplify before each commit and apply any changes needed to keep the code easy to review.
+- Write clear commit messages that describe what changed and why.
+- Use pyproject.toml for project metadata and dependency configuration.
+- Use uv for package and environment management.
