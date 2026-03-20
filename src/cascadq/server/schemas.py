@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class CreateQueueRequest(BaseModel):
     name: str
-    payload_schema: dict = {}
+    payload_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class PushRequest(BaseModel):
-    payload: dict
+    payload: dict[str, Any]
 
 
 class ClaimRequest(BaseModel):
@@ -24,12 +26,3 @@ class HeartbeatRequest(BaseModel):
 
 class FinishRequest(BaseModel):
     task_id: str
-
-
-class TaskResponse(BaseModel):
-    task_id: str
-
-
-class ClaimResponse(BaseModel):
-    task_id: str
-    payload: dict
