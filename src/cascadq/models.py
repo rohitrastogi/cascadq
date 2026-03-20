@@ -54,15 +54,6 @@ class QueueFile:
     tasks: list[Task] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class BrokerInfo:
-    """Written to broker.json on startup. Purely for debuggability."""
-
-    broker_id: str
-    host: str
-    started_at: float
-
-
 def serialize_queue_file(qf: QueueFile) -> bytes:
     """Serialize a QueueFile to JSON bytes."""
     data = {
@@ -113,10 +104,3 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
     )
 
 
-def serialize_broker_info(info: BrokerInfo) -> bytes:
-    data = {
-        "broker_id": info.broker_id,
-        "host": info.host,
-        "started_at": info.started_at,
-    }
-    return json.dumps(data, separators=(",", ":")).encode()
