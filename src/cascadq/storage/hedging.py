@@ -8,7 +8,6 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from cascadq.errors import ConflictError
 from cascadq.storage.protocol import VersionToken
 
 logger = logging.getLogger(__name__)
@@ -45,33 +44,53 @@ async def hedged_write(
     # Primary is slow — fire a hedge
     logger.debug("hedging write for %s after %.1fs", key, time.monotonic() - t0)
     hedge = asyncio.create_task(write_fn(key, data, expected_version))
-    done, pending = await asyncio.wait(
-        {primary, hedge}, return_when=asyncio.FIRST_COMPLETED,
-    )
-    for t in pending:
-        t.cancel()
 
-    # Pick the successful result.  The loser gets a CAS conflict
-    # because the version changed when the winner landed — that is
-    # a harmless self-conflict.
-    result: VersionToken | None = None
-    conflict: ConflictError | None = None
-    for t in done:
-        try:
-            result = t.result()
-        except ConflictError as e:
-            conflict = e
-
-    for t in pending:
-        try:
-            await t
-        except (asyncio.CancelledError, ConflictError):
-            pass
+    # Wait for BOTH to settle — a first-completed conflict doesn't
+    # mean the hedge will also fail (it may be a self-conflict).
+    tasks = {primary, hedge}
+    result, error = await _collect_results(tasks)
 
     if result is not None:
         logger.info("hedged write landed for %s %.3fs", key, time.monotonic() - t0)
         return result
 
-    # Both writes got CAS conflicts — real conflict from another writer
-    assert conflict is not None
-    raise conflict
+    assert error is not None
+    raise error
+
+
+async def _collect_results(
+    tasks: set[asyncio.Task[VersionToken]],
+) -> tuple[VersionToken | None, BaseException | None]:
+    """Wait for all tasks, return (first_success, first_error).
+
+    Cancels remaining tasks as soon as one succeeds.  If all fail,
+    returns the first non-cancellation error.
+    """
+    result: VersionToken | None = None
+    error: BaseException | None = None
+
+    while tasks:
+        done, tasks = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in done:
+            try:
+                result = t.result()
+            except asyncio.CancelledError:
+                pass
+            except BaseException as e:
+                if error is None:
+                    error = e
+
+        if result is not None:
+            # Winner found — cancel the rest
+            for t in tasks:
+                t.cancel()
+            for t in tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, BaseException):
+                    pass
+            return result, None
+
+    return None, error

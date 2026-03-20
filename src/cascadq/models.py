@@ -30,12 +30,15 @@ class Task:
     last_heartbeat: float | None = None
     claim_idempotency_key: str = ""
 
-    def claim(
-        self, now: float, claim_idempotency_key: str,
-    ) -> Task:
+    def claim(self, claim_idempotency_key: str) -> Task:
         self.status = TaskStatus.claimed
         self.claim_idempotency_key = claim_idempotency_key
         return self
+
+    @property
+    def lease_active(self) -> bool:
+        """True once the lease has been activated (first heartbeat received)."""
+        return self.status == TaskStatus.claimed and self.last_heartbeat is not None
 
     def heartbeat(self, now: float) -> Task:
         self.last_heartbeat = now

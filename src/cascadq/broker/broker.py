@@ -197,13 +197,10 @@ class Broker:
         while True:
             now = self._clock()
             try:
-                task, waiter = state.claim(now, idempotency_key)
+                task, waiter = state.claim(idempotency_key)
                 self._get_coordinator().notify()
                 await waiter.wait()
-                # Lease starts now — claim is durably committed.
-                # The timestamp is set in memory for the heartbeat checker;
-                # it will be persisted in the next natural flush cycle.
-                state.heartbeat(task.task_id, self._clock())
+                state.activate_lease(task.task_id, self._clock())
                 return task
             except QueueEmptyError as empty:
                 remaining = None
