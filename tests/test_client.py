@@ -58,7 +58,7 @@ class TestClientLifecycle:
     ) -> None:
         client, _ = server_client
         await client.create_queue("q")
-        result = await client.claim("q")
+        result = await client.claim("q", timeout_seconds=0)
         assert result is None
 
 
@@ -77,7 +77,7 @@ class TestClaimedTaskHeartbeat:
             await asyncio.sleep(0.25)
 
         # Task should be finished — claiming again should find nothing
-        result = await client.claim("q")
+        result = await client.claim("q", timeout_seconds=0)
         assert result is None
 
     async def test_explicit_finish_stops_heartbeat(

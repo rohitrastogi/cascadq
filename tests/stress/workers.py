@@ -30,7 +30,7 @@ def run_workers(
     processes: list[tuple[subprocess.Popen[bytes], str]] = []
     event_files: list[Path] = []
 
-    max_empty = _compute_max_empty_claims(scenario)
+    claim_timeout = scenario.claim_timeout_seconds
 
     for qs in queue_specs:
         logical_ids = _generate_logical_ids(scenario.name, qs)
@@ -68,7 +68,7 @@ def run_workers(
                 "processing_delay": scenario.processing_delay_seconds,
                 "processing_jitter": scenario.processing_jitter_seconds,
                 "heartbeat_interval": scenario.heartbeat_interval_seconds,
-                "max_empty_claims": max_empty,
+                "claim_timeout_seconds": claim_timeout,
             }
             processes.append((_spawn_worker(config, tmpdir), wid))
 
@@ -155,16 +155,3 @@ def _resolve_behaviors(qs: QueueSpec) -> list[str]:
     return behaviors
 
 
-def _compute_max_empty_claims(scenario: ScenarioConfig) -> int:
-    """Compute how many consecutive empty claims before a consumer exits.
-
-    Must wait longer than heartbeat timeout + check interval + flush
-    latency so that abandoned tasks have time to be re-queued via S3.
-    The 10s margin accounts for real S3 round-trip and flush batching.
-    """
-    wait_seconds = (
-        scenario.heartbeat_timeout_seconds
-        + scenario.heartbeat_check_interval_seconds
-        + 10.0  # margin for S3 flush latency
-    )
-    return max(200, int(wait_seconds / 0.05))

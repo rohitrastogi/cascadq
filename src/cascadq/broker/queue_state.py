@@ -88,6 +88,7 @@ class QueueState:
             if t.status == TaskStatus.pending
         ]
         heapq.heapify(self._pending_heap)
+        self._push_event = asyncio.Event()
 
     @property
     def metadata(self) -> QueueMetadata:
@@ -126,6 +127,7 @@ class QueueState:
         self._next_sequence += 1
         self._tasks[task.task_id] = task
         heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
+        self._push_event.set()
         if idempotency_key is not None:
             self._idempotency_keys[idempotency_key] = IdempotencyRecord(
                 task_id=task_id, created_at=now,
@@ -248,7 +250,18 @@ class QueueState:
             self._tasks[new_id] = new_task
             heapq.heappush(self._pending_heap, (next_seq, new_id))
             next_seq -= 1
+        self._push_event.set()
         self._dirty = True
+
+    async def wait_for_push(self, timeout: float | None) -> None:
+        """Block until a push or re-queue signals new pending work.
+
+        Clears the event first so we only wake on *new* pushes.
+        Safe against races: single-threaded asyncio means no yield
+        between the failed claim() and the clear().
+        """
+        self._push_event.clear()
+        await asyncio.wait_for(self._push_event.wait(), timeout)
 
     def compact(self, now: float) -> None:
         """Remove completed tasks and expired idempotency keys."""

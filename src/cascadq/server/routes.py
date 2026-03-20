@@ -95,7 +95,9 @@ async def claim(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        task = await broker.claim(name, body.idempotency_key)
+        task = await broker.claim(
+            name, body.idempotency_key, body.timeout_seconds,
+        )
         return JSONResponse(
             {
                 "task_id": task.task_id,
