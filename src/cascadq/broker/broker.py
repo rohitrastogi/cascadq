@@ -224,6 +224,7 @@ class Broker:
         state = self._get_state(queue_name)
         now = self._clock()
         state.heartbeat(task_id, now)
+        self._get_coordinator().notify()
 
     async def finish(
         self,

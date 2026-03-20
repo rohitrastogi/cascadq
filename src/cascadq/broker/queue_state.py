@@ -108,7 +108,7 @@ class QueueState:
         """
         existing = self._idempotency_keys.get(idempotency_key)
         if existing is not None:
-            return self._resolved_waiter()
+            return self._append_waiter()
 
         schema = self._metadata.payload_schema
         if schema:
@@ -149,7 +149,7 @@ class QueueState:
         if existing_id is not None:
             task = self._tasks.get(existing_id)
             if task is not None and task.status == TaskStatus.claimed:
-                return task, self._resolved_waiter()
+                return task, self._append_waiter()
             del self._claim_key_index[idempotency_key]
 
         task = self._pop_next_pending()
@@ -192,12 +192,12 @@ class QueueState:
         task = self._tasks.get(task_id)
         if task is None:
             if sequence <= self._compacted_through_sequence:
-                return self._resolved_waiter()
+                return self._append_waiter()
             raise TaskNotFoundError(
                 f"task {task_id!r} not found in queue {self.name!r}"
             )
         if task.status == TaskStatus.completed:
-            return self._resolved_waiter()
+            return self._append_waiter()
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
                 f"task {task_id!r} is not claimed (status={task.status.value})"
@@ -265,6 +265,14 @@ class QueueState:
         """
         self._push_event.clear()
         await asyncio.wait_for(self._push_event.wait(), timeout)
+
+    def wake_blocked_claims(self) -> None:
+        """Wake any claim() calls blocked on wait_for_push().
+
+        Called by the flush coordinator on fencing so that blocked
+        claims promptly see the shutdown error instead of hanging.
+        """
+        self._push_event.set()
 
     def compact(self, now: float) -> None:
         """Remove completed tasks and expired idempotency keys."""
@@ -381,13 +389,3 @@ class QueueState:
         self._write_buffer.append(waiter)
         return waiter
 
-    @staticmethod
-    def _resolved_waiter() -> FlushWaiter:
-        """Return a pre-resolved waiter for idempotent no-op paths.
-
-        Not appended to the write buffer — the caller returns
-        immediately without waiting for a flush cycle.
-        """
-        waiter = FlushWaiter()
-        waiter.set_result()
-        return waiter

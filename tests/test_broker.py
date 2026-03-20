@@ -1,5 +1,7 @@
 """Tests for Broker lifecycle and public API."""
 
+import asyncio
+
 import pytest
 
 from cascadq.broker.broker import Broker
@@ -130,4 +132,27 @@ class TestBrokerFencing:
 
         with pytest.raises(BrokerFencedError):
             await broker.push("q", {"x": 2}, _key())
+        await broker.stop()
+
+    async def test_blocking_claim_unblocks_on_fencing(
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
+    ) -> None:
+        """A claim blocked on an empty queue should fail promptly when fenced."""
+        broker = await _start_broker(memory_store, test_config)
+        await broker.create_queue("q")
+
+        async def fence_after_delay() -> None:
+            await asyncio.sleep(0.05)
+            memory_store.inject_conflict("queues/q.json")
+            # Push to queue q — this triggers a flush that hits the
+            # conflict on queues/q.json, fencing the broker.
+            try:
+                await broker.push("q", {"x": 1}, _key())
+            except BrokerFencedError:
+                pass
+
+        fence_task = asyncio.create_task(fence_after_delay())
+        with pytest.raises(BrokerFencedError):
+            await broker.claim("q", _key())
+        await fence_task
         await broker.stop()

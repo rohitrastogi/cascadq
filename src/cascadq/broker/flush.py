@@ -172,7 +172,9 @@ class FlushCoordinator:
         self._shutdown_error = error
         for waiter in in_flight_waiters:
             waiter.set_error(error)
-        # Also drain any waiters that accumulated during the flush
+        # Also drain any waiters that accumulated during the flush,
+        # and wake any blocking claim() calls so they see the fenced state.
         for state in self._queue_states.values():
             for waiter in state.swap_write_buffer():
                 waiter.set_error(error)
+            state.wake_blocked_claims()
