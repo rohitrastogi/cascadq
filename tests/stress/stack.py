@@ -15,6 +15,7 @@ from pathlib import Path
 from tempfile import mkstemp
 
 import httpx
+import yaml
 
 from .config import ScenarioConfig
 
@@ -40,7 +41,7 @@ async def stress_stack(
 
     The caller supplies a unique *prefix* for storage isolation.
     R2/S3 credentials are read from the environment by the server
-    process (``python -m cascadq --storage s3``).
+    process.
     """
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -48,13 +49,16 @@ async def stress_stack(
     server_log_fd, server_log_path = mkstemp(suffix=".server.log")
     server_log = Path(server_log_path)
     server_log_fh = os.fdopen(server_log_fd, "w")
+    config_path = _write_server_config(scenario, prefix, port)
     logger.info("Server log: %s", server_log)
     server_proc = subprocess.Popen(
         [
-            sys.executable, "-m", "cascadq",
-            "--storage", "s3",
+            sys.executable,
+            "-m",
+            "cascadq",
+            "--config",
+            str(config_path),
             "--port", str(port),
-            "--storage-prefix", prefix,
             "--log-level", "debug",
         ],
         stdout=subprocess.DEVNULL,
@@ -77,10 +81,7 @@ async def stress_stack(
             server_proc.kill()
             server_proc.wait()
         server_log_fh.close()
-        lines = server_log.read_text().splitlines()
-        for line in lines:
-            if "timeout" in line.lower() or "Flush slow" in line:
-                logger.info("server: %s", line)
+        config_path.unlink(missing_ok=True)
         logger.info("Server on port %d stopped", port)
 
 
@@ -88,6 +89,44 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _write_server_config(
+    scenario: ScenarioConfig,
+    prefix: str,
+    port: int,
+) -> Path:
+    """Write a temporary YAML config file for the stress-test broker."""
+    config = {
+        "server": {
+            "host": "127.0.0.1",
+            "port": port,
+            "log_level": "debug",
+        },
+        "storage": {
+            "backend": "s3",
+            "prefix": prefix,
+            "bucket": os.environ["CASCADQ_S3_BUCKET"],
+            "endpoint_url": os.environ.get("CASCADQ_S3_ENDPOINT_URL"),
+            "region": os.environ.get("CASCADQ_S3_REGION", "auto"),
+        },
+        "broker": {
+            "heartbeat_timeout_seconds": scenario.heartbeat_timeout_seconds,
+            "heartbeat_check_interval_seconds": (
+                scenario.heartbeat_check_interval_seconds
+            ),
+            "compaction_interval_seconds": scenario.compaction_interval_seconds,
+        },
+    }
+
+    config_fd, config_path = mkstemp(suffix=".server.yaml")
+    try:
+        with os.fdopen(config_fd, "w") as config_fh:
+            yaml.safe_dump(config, config_fh, sort_keys=False)
+    except Exception:
+        Path(config_path).unlink(missing_ok=True)
+        raise
+    return Path(config_path)
 
 
 async def _wait_for_server(

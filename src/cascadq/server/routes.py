@@ -32,6 +32,9 @@ from cascadq.server.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Ordered most-specific first: if exception subclasses are added,
+# children must appear before their parents so isinstance matches
+# the most specific handler.
 _ERROR_MAP: dict[type[Exception], tuple[int, str]] = {
     QueueNotFoundError: (404, "queue_not_found"),
     TaskNotFoundError: (404, "task_not_found"),
@@ -44,9 +47,13 @@ _ERROR_MAP: dict[type[Exception], tuple[int, str]] = {
 
 
 def _error_response(exc: Exception) -> Response:
-    status, code = _ERROR_MAP.get(type(exc), (500, "internal_error"))
+    for cls, (status, code) in _ERROR_MAP.items():
+        if isinstance(exc, cls):
+            return JSONResponse(
+                {"error": str(exc), "code": code}, status_code=status
+            )
     return JSONResponse(
-        {"error": str(exc), "code": code}, status_code=status
+        {"error": str(exc), "code": "internal_error"}, status_code=500
     )
 
 

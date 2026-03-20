@@ -87,6 +87,8 @@ async def hedged_write(
         except (asyncio.CancelledError, BaseException):
             pass
 
-    metrics.hedge_total.labels(outcome="hedge_won").inc()
-    logger.info("hedged write landed for %s %.3fs", key, time.monotonic() - t0)
+    outcome = "hedge_won" if first is hedge else "primary_won"
+    metrics.hedge_total.labels(outcome=outcome).inc()
+    if first is hedge:
+        logger.info("hedge beat primary for %s %.3fs", key, time.monotonic() - t0)
     return result
