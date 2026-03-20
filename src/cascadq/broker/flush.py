@@ -5,16 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from cascadq.broker import queue_key
 from cascadq.broker.queue_state import FlushWaiter, QueueState
 from cascadq.errors import BrokerFencedError, ConflictError
 from cascadq.models import serialize_queue_file
 from cascadq.storage.protocol import ObjectStore, VersionToken
 
 logger = logging.getLogger(__name__)
-
-
-def _queue_key(prefix: str, name: str) -> str:
-    return f"{prefix}queues/{name}.json"
 
 
 class FlushCoordinator:
@@ -102,7 +99,7 @@ class FlushCoordinator:
             async with asyncio.TaskGroup() as tg:
                 results: dict[str, asyncio.Task[VersionToken]] = {}
                 for name, _state, data, version in jobs:
-                    key = _queue_key(self._prefix, name)
+                    key = queue_key(self._prefix, name)
                     results[name] = tg.create_task(
                         self._store.write(key, data, version)
                     )

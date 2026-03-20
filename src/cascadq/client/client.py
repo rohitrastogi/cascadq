@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 from types import TracebackType
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -146,7 +147,7 @@ class CascadqClient:
         path: str,
         expected_status: int | tuple[int, ...] = 200,
         error_map: dict[int, type[CascadqError]] | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Send an HTTP request with retry for transient failures."""
         expected = (

@@ -53,6 +53,7 @@
 - Make one logical change per commit. Separate unrelated fixes, refactors, and feature work into different commits.
 - When adding or materially changing production code, add or update tests in the same commit unless the change is purely mechanical and does not alter behavior.
 - Run /simplify before each commit and apply any changes needed to keep the code easy to review.
+- Run `uv run ruff check src/ tests/` and `uv run ty check src/` before each commit. Fix all errors before committing.
 - Write clear commit messages that describe what changed and why.
 - Use pyproject.toml for project metadata and dependency configuration.
 - Use uv for package and environment management.

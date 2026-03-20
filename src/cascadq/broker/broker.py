@@ -8,8 +8,9 @@ from collections.abc import Callable
 from time import time
 from uuid import uuid4
 
+from cascadq.broker import queue_key
 from cascadq.broker.compaction import CompactionWorker
-from cascadq.broker.flush import FlushCoordinator, _queue_key
+from cascadq.broker.flush import FlushCoordinator
 from cascadq.broker.heartbeat import HeartbeatWorker
 from cascadq.broker.queue_state import QueueState
 from cascadq.config import BrokerConfig
@@ -121,6 +122,11 @@ class Broker:
         if self.is_fenced:
             raise BrokerFencedError("broker has been fenced by another instance")
 
+    def _get_coordinator(self) -> FlushCoordinator:
+        if self._coordinator is None:
+            raise RuntimeError("broker has not been started")
+        return self._coordinator
+
     def _get_state(self, queue_name: str) -> QueueState:
         state = self._queue_states.get(queue_name)
         if state is None:
@@ -138,7 +144,7 @@ class Broker:
                 created_at=self._clock(), payload_schema=schema
             ),
         )
-        key = _queue_key(self._prefix, name)
+        key = queue_key(self._prefix, name)
         try:
             version = await self._store.write_new(key, serialize_queue_file(qf))
         except ConflictError as e:
@@ -154,7 +160,7 @@ class Broker:
         self._check_fenced()
         if name not in self._queue_states:
             raise QueueNotFoundError(f"queue {name!r} not found")
-        key = _queue_key(self._prefix, name)
+        key = queue_key(self._prefix, name)
         await self._store.delete(key)
         del self._queue_states[name]
         logger.info("Deleted queue %s", name)
@@ -169,7 +175,7 @@ class Broker:
         task_id = uuid4().hex
         now = self._clock()
         waiter = state.push(task_id, payload, now)
-        self._coordinator.notify()
+        self._get_coordinator().notify()
         await waiter.wait()
         return task_id
 
@@ -179,7 +185,7 @@ class Broker:
         state = self._get_state(queue_name)
         now = self._clock()
         task, waiter = state.claim(consumer_id, now)
-        self._coordinator.notify()
+        self._get_coordinator().notify()
         await waiter.wait()
         return task
 
@@ -189,7 +195,7 @@ class Broker:
         state = self._get_state(queue_name)
         now = self._clock()
         waiter = state.heartbeat(task_id, now)
-        self._coordinator.notify()
+        self._get_coordinator().notify()
         await waiter.wait()
 
     async def finish(self, queue_name: str, task_id: str) -> None:
@@ -197,5 +203,5 @@ class Broker:
         self._check_fenced()
         state = self._get_state(queue_name)
         waiter = state.finish(task_id)
-        self._coordinator.notify()
+        self._get_coordinator().notify()
         await waiter.wait()

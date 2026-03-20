@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
-from enum import Enum
+from enum import StrEnum
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     pending = "pending"
     claimed = "claimed"
     completed = "completed"

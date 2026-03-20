@@ -8,12 +8,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from cascadq.errors import ConflictError
 from botocore.exceptions import ClientError
 
+from cascadq.errors import ConflictError
 from cascadq.storage.s3 import S3ObjectStore, _strip_etag
-
 
 # ---------------------------------------------------------------------------
 # Helpers
