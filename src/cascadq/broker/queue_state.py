@@ -67,6 +67,7 @@ class QueueState:
         self._metadata = queue_file.metadata
         self._next_sequence = queue_file.next_sequence
         self._compacted_through_sequence = queue_file.compacted_through_sequence
+        self._idempotency_keys: dict[str, str] = dict(queue_file.idempotency_keys)
         self._tasks: dict[str, Task] = {t.task_id: t for t in queue_file.tasks}
         self.version = version
         self._write_buffer: list[FlushWaiter] = []
@@ -82,8 +83,23 @@ class QueueState:
     def metadata(self) -> QueueMetadata:
         return self._metadata
 
-    def push(self, task_id: str, payload: dict, now: float) -> FlushWaiter:
-        """Add a new task to the queue. Validates payload against schema."""
+    def push(
+        self,
+        task_id: str,
+        payload: dict,
+        now: float,
+        idempotency_key: str | None = None,
+    ) -> tuple[str, FlushWaiter]:
+        """Add a new task to the queue. Validates payload against schema.
+
+        Returns ``(task_id, waiter)``.  If *idempotency_key* was already
+        used, returns the original task_id without creating a duplicate.
+        """
+        if idempotency_key is not None:
+            existing = self._idempotency_keys.get(idempotency_key)
+            if existing is not None:
+                return existing, self._append_waiter()
+
         schema = self._metadata.payload_schema
         if schema:
             try:
@@ -101,8 +117,10 @@ class QueueState:
         self._next_sequence += 1
         self._tasks[task.task_id] = task
         heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
+        if idempotency_key is not None:
+            self._idempotency_keys[idempotency_key] = task_id
         self._dirty = True
-        return self._append_waiter()
+        return task_id, self._append_waiter()
 
     def claim(self, consumer_id: str, now: float) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number."""
@@ -207,8 +225,14 @@ class QueueState:
         max_seq = max(t.sequence for t in completed)
         if max_seq > self._compacted_through_sequence:
             self._compacted_through_sequence = max_seq
+        compacted_ids = {t.task_id for t in completed}
         for t in completed:
             del self._tasks[t.task_id]
+        # Remove idempotency keys whose tasks were compacted
+        self._idempotency_keys = {
+            k: v for k, v in self._idempotency_keys.items()
+            if v not in compacted_ids
+        }
         # Rebuild the heap to discard stale entries that accumulate
         # from claimed tasks and heartbeat-timeout re-queues.
         self._pending_heap = [
@@ -232,6 +256,7 @@ class QueueState:
             next_sequence=self._next_sequence,
             compacted_through_sequence=self._compacted_through_sequence,
             tasks=tasks,
+            idempotency_keys=dict(self._idempotency_keys),
         )
 
     def swap_write_buffer(self) -> list[FlushWaiter]:
@@ -242,6 +267,14 @@ class QueueState:
         buffer = self._write_buffer
         self._write_buffer = []
         return buffer
+
+    def prepend_waiters(self, waiters: list[FlushWaiter]) -> None:
+        """Re-insert waiters at the front of the write buffer.
+
+        Used by the flush coordinator to keep waiters pending after a
+        transient flush failure so they are re-collected on the next cycle.
+        """
+        self._write_buffer = waiters + self._write_buffer
 
     @property
     def is_dirty(self) -> bool:

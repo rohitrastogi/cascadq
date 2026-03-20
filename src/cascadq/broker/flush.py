@@ -7,7 +7,7 @@ import logging
 
 from cascadq.broker import queue_key
 from cascadq.broker.queue_state import FlushWaiter, QueueState
-from cascadq.errors import BrokerFencedError, ConflictError, FlushFailedError
+from cascadq.errors import BrokerFencedError, ConflictError
 from cascadq.models import serialize_queue_file
 from cascadq.storage.protocol import ObjectStore, VersionToken
 
@@ -21,8 +21,9 @@ class FlushCoordinator:
     failure, every waiter can be resolved with an error. CAS failure
     on ANY queue triggers global fencing.
 
-    Holds a reference to the broker's queue_states dict — no separate
-    registration needed.
+    On transient (non-CAS) write failures, waiters are kept pending
+    and the flush is retried internally. Clients are never told a
+    mutation failed while the broker still intends to complete it.
     """
 
     def __init__(
@@ -75,27 +76,29 @@ class FlushCoordinator:
         """Flush all dirty queues concurrently.
 
         Buffer swap happens upfront so the coordinator owns every waiter.
-        If any CAS write fails, all waiters (in-flight + newly buffered)
-        are failed and the broker enters fenced state.
+        On success all waiters are resolved. On CAS conflict the broker
+        fences. On transient failure waiters are returned to their queues
+        and the flush retries after a delay.
         """
-        all_waiters: list[FlushWaiter] = []
+        waiters_by_queue: dict[str, list[FlushWaiter]] = {}
         jobs: list[tuple[str, QueueState, bytes, VersionToken]] = []
 
         for state in self._queue_states.values():
             if not state.is_dirty and not state.has_pending_waiters:
                 continue
-            all_waiters.extend(state.swap_write_buffer())
+            swapped = state.swap_write_buffer()
+            if swapped:
+                waiters_by_queue[state.name] = swapped
             if state.is_dirty:
                 snapshot = state.snapshot()
                 data = serialize_queue_file(snapshot)
                 jobs.append((state.name, state, data, state.version))
 
+        all_waiters = [
+            w for ws in waiters_by_queue.values() for w in ws
+        ]
+
         if not jobs:
-            if all_waiters:
-                logger.debug(
-                    "Resolving %d waiters with no dirty queues to flush",
-                    len(all_waiters),
-                )
             for waiter in all_waiters:
                 waiter.set_result()
             return
@@ -135,13 +138,10 @@ class FlushCoordinator:
                 )
                 self._fence(all_waiters)
             else:
-                # Fail current waiters — their mutations are in-memory but
-                # not persisted. They'll need to retry at the HTTP level.
-                error = FlushFailedError(
-                    "flush failed, client should retry"
-                )
-                for waiter in all_waiters:
-                    waiter.set_error(error)
+                # Keep waiters pending — put them back so the next
+                # flush cycle re-collects and re-snapshots them.
+                for name, waiters in waiters_by_queue.items():
+                    self._queue_states[name].prepend_waiters(waiters)
                 await asyncio.sleep(self._retry_delay)
                 self._flush_event.set()
 
