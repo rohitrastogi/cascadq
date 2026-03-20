@@ -1,5 +1,7 @@
 """Tests for InMemoryObjectStore CAS semantics."""
 
+import asyncio
+
 import pytest
 
 from cascadq.errors import ConflictError
@@ -65,3 +67,30 @@ class TestCASSemantics:
         await store.write_new("other.json", b"")
         keys = await store.list_prefix("queues/")
         assert sorted(keys) == ["queues/a.json", "queues/b.json"]
+
+
+class TestWriteDelay:
+    async def test_inject_write_delay_slows_write(
+        self, store: InMemoryObjectStore
+    ) -> None:
+        await store.write_new("k", b"v1")
+        _, version = await store.read("k")
+        store.inject_write_delay("k", 0.1)
+        t0 = asyncio.get_running_loop().time()
+        await store.write("k", b"v2", version)
+        elapsed = asyncio.get_running_loop().time() - t0
+        assert elapsed >= 0.09
+
+    async def test_inject_write_delay_consumed_once(
+        self, store: InMemoryObjectStore
+    ) -> None:
+        await store.write_new("k", b"v1")
+        _, v1 = await store.read("k")
+        store.inject_write_delay("k", 0.1)
+        await store.write("k", b"v2", v1)
+        _, v2 = await store.read("k")
+        # Second write should not be delayed
+        t0 = asyncio.get_running_loop().time()
+        await store.write("k", b"v3", v2)
+        elapsed = asyncio.get_running_loop().time() - t0
+        assert elapsed < 0.05
