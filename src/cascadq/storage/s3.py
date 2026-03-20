@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from botocore.exceptions import ClientError
 
 from cascadq.errors import ConflictError
+from cascadq.storage.hedging import hedged_write
 from cascadq.storage.protocol import VersionToken
 
 if TYPE_CHECKING:
@@ -32,12 +33,14 @@ class S3ObjectStore:
         secret_access_key: str,
         endpoint_url: str | None = None,
         region: str = "auto",
+        hedge_after_seconds: float = 0.0,
     ) -> None:
         self._bucket = bucket
         self._endpoint_url = endpoint_url
         self._access_key_id = access_key_id
         self._secret_access_key = secret_access_key
         self._region = region
+        self._hedge_after = hedge_after_seconds
         self._client_ctx: Any = None
         self._client: Any = None
 
@@ -95,19 +98,17 @@ class S3ObjectStore:
     async def write(
         self, key: str, data: bytes, expected_version: VersionToken
     ) -> VersionToken:
-        """Conditional write using ``If-Match``. Returns the new ETag."""
-        etag_value = f'"{expected_version}"'
-        t0 = time.monotonic()
-        try:
-            response = await self._client.put_object(
-                Bucket=self._bucket, Key=key, Body=data, IfMatch=etag_value
+        """Conditional write using ``If-Match``. Returns the new ETag.
+
+        When hedging is enabled, a speculative retry fires if the
+        primary write hasn't completed after ``hedge_after_seconds``.
+        """
+        if self._hedge_after > 0:
+            return await hedged_write(
+                self._conditional_put, key, data,
+                expected_version, self._hedge_after,
             )
-        except ClientError as exc:
-            logger.debug("s3 write %s failed %.3fs", key, time.monotonic() - t0)
-            _raise_on_precondition(exc, f"version mismatch for key={key!r}")
-            raise
-        logger.debug("s3 write %s %dB %.3fs", key, len(data), time.monotonic() - t0)
-        return _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
+        return await self._conditional_put(key, data, expected_version)
 
     async def write_new(self, key: str, data: bytes) -> VersionToken:
         """Write-if-not-exists using ``If-None-Match: *``. Returns the ETag."""
@@ -143,6 +144,23 @@ class S3ObjectStore:
             kwargs["ContinuationToken"] = response["NextContinuationToken"]
 
         return keys
+
+    async def _conditional_put(
+        self, key: str, data: bytes, expected_version: VersionToken,
+    ) -> VersionToken:
+        """Single conditional PUT with ``If-Match``. Returns the new ETag."""
+        etag_value = f'"{expected_version}"'
+        t0 = time.monotonic()
+        try:
+            response = await self._client.put_object(
+                Bucket=self._bucket, Key=key, Body=data, IfMatch=etag_value
+            )
+        except ClientError as exc:
+            logger.debug("s3 write %s failed %.3fs", key, time.monotonic() - t0)
+            _raise_on_precondition(exc, f"version mismatch for key={key!r}")
+            raise
+        logger.debug("s3 write %s %dB %.3fs", key, len(data), time.monotonic() - t0)
+        return _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
 
 def _strip_etag(etag: str) -> str:
