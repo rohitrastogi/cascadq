@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -18,12 +18,17 @@ def create_app(
     store: ObjectStore,
     config: BrokerConfig | None = None,
     broker: Broker | None = None,
+    store_lifecycle: AbstractAsyncContextManager | None = None,
 ) -> Starlette:
     """Create the Starlette application with broker lifecycle.
 
     If a broker is provided, it is used directly and the caller is
     responsible for its lifecycle. Otherwise one is created and
     managed by the app lifespan.
+
+    If *store_lifecycle* is provided, it is entered/exited around the
+    broker lifecycle. Pass the store itself when it implements
+    ``__aenter__``/``__aexit__`` (e.g., ``S3ObjectStore``).
     """
     owns_broker = broker is None
     if broker is None:
@@ -31,12 +36,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncGenerator[None]:
-        if owns_broker:
-            await broker.start()
-        app.state.broker = broker
-        yield
-        if owns_broker:
-            await broker.stop()
+        ctx = store_lifecycle if store_lifecycle is not None else nullcontext()
+        async with ctx:
+            if owns_broker:
+                await broker.start()
+            app.state.broker = broker
+            yield
+            if owns_broker:
+                await broker.stop()
 
     app = Starlette(
         routes=[

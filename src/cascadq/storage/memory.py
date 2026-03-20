@@ -12,6 +12,7 @@ class InMemoryObjectStore:
     def __init__(self) -> None:
         self._store: dict[str, tuple[bytes, int]] = {}
         self._conflict_keys: set[str] = set()
+        self._error_keys: dict[str, int] = {}
 
     async def read(self, key: str) -> tuple[bytes, VersionToken]:
         if key not in self._store:
@@ -22,6 +23,13 @@ class InMemoryObjectStore:
     async def write(
         self, key: str, data: bytes, expected_version: VersionToken
     ) -> VersionToken:
+        remaining = self._error_keys.get(key, 0)
+        if remaining > 0:
+            if remaining == 1:
+                del self._error_keys[key]
+            else:
+                self._error_keys[key] = remaining - 1
+            raise OSError(f"injected transient error for key={key!r}")
         if key in self._conflict_keys:
             self._conflict_keys.discard(key)
             raise ConflictError(f"injected conflict for key={key!r}")
@@ -55,3 +63,10 @@ class InMemoryObjectStore:
         Useful for testing broker fencing without two real brokers.
         """
         self._conflict_keys.add(key)
+
+    def inject_transient_error(self, key: str, count: int = 1) -> None:
+        """Make the next *count* write() calls for *key* raise OSError.
+
+        Useful for testing the flush coordinator's transient-failure path.
+        """
+        self._error_keys[key] = count
