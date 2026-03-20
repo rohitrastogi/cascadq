@@ -175,12 +175,16 @@ class Broker:
         self._get_coordinator().notify()
         await waiter.wait()
 
-    async def claim(self, queue_name: str) -> Task:
+    async def claim(
+        self,
+        queue_name: str,
+        idempotency_key: str | None = None,
+    ) -> Task:
         """Claim the next pending task. Blocks until the mutation is flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
         now = self._clock()
-        task, waiter = state.claim(now)
+        task, waiter = state.claim(now, idempotency_key)
         self._get_coordinator().notify()
         await waiter.wait()
         return task
@@ -195,11 +199,15 @@ class Broker:
         await waiter.wait()
 
     async def finish(
-        self, queue_name: str, task_id: str, sequence: int,
+        self,
+        queue_name: str,
+        task_id: str,
+        sequence: int,
+        idempotency_key: str | None = None,
     ) -> None:
         """Mark a claimed task as completed. Blocks until flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
-        waiter = state.finish(task_id, sequence)
+        waiter = state.finish(task_id, sequence, idempotency_key)
         self._get_coordinator().notify()
         await waiter.wait()

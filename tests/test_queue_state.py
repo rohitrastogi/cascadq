@@ -103,6 +103,39 @@ class TestClaimFinishLifecycle:
             state.finish("bogus", sequence=5)
 
 
+class TestClaimIdempotency:
+    def test_same_key_returns_same_task(self) -> None:
+        state = _make_state()
+        state.push("t1", {}, now=100.0)
+        task1, _ = state.claim(now=200.0, idempotency_key="k1")
+        task2, _ = state.claim(now=201.0, idempotency_key="k1")
+        assert task1.task_id == task2.task_id
+
+    def test_different_keys_claim_different_tasks(self) -> None:
+        state = _make_state()
+        state.push("t1", {}, now=100.0)
+        state.push("t2", {}, now=101.0)
+        task1, _ = state.claim(now=200.0, idempotency_key="k1")
+        task2, _ = state.claim(now=201.0, idempotency_key="k2")
+        assert task1.task_id != task2.task_id
+
+    def test_replay_after_requeue_claims_new_task(self) -> None:
+        """If the originally claimed task was re-queued (heartbeat timeout),
+        a retry with the same key should claim a fresh task."""
+        state = _make_state()
+        state.push("t1", {}, now=100.0)
+        state.push("t2", {}, now=101.0)
+        task1, _ = state.claim(now=200.0, idempotency_key="k1")
+        # Re-queue t1 via heartbeat timeout
+        state.timeout_expired_claims(
+            now=250.0, timeout_seconds=30.0,
+            next_task_id_fn=lambda: "t1-retry",
+        )
+        # Retry with same key — original claim is gone, should claim next
+        task_retry, _ = state.claim(now=260.0, idempotency_key="k1")
+        assert task_retry.task_id != task1.task_id
+
+
 class TestHeartbeatTimeout:
     def test_expired_claim_is_requeued_to_front(self) -> None:
         state = _make_state()

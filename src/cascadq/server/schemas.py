@@ -18,7 +18,7 @@ class PushRequest(BaseModel):
 
 
 class ClaimRequest(BaseModel):
-    pass
+    idempotency_key: str | None = None
 
 
 class HeartbeatRequest(BaseModel):
@@ -28,3 +28,4 @@ class HeartbeatRequest(BaseModel):
 class FinishRequest(BaseModel):
     task_id: str
     sequence: int
+    idempotency_key: str | None = None

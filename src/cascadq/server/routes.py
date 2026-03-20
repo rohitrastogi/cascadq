@@ -92,12 +92,12 @@ async def push(request: Request) -> Response:
 async def claim(request: Request) -> Response:
     name = request.path_params["name"]
     try:
-        ClaimRequest.model_validate_json(await request.body())
+        body = ClaimRequest.model_validate_json(await request.body())
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        task = await broker.claim(name)
+        task = await broker.claim(name, body.idempotency_key)
         return JSONResponse(
             {
                 "task_id": task.task_id,
@@ -134,7 +134,9 @@ async def finish(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        await broker.finish(name, body.task_id, body.sequence)
+        await broker.finish(
+            name, body.task_id, body.sequence, body.idempotency_key,
+        )
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
