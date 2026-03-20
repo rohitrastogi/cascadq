@@ -39,21 +39,21 @@ class TestFIFOOrdering:
         state.push("t2", {"x": 2}, now=101.0, idempotency_key=_key())
         state.push("t3", {"x": 3}, now=102.0, idempotency_key=_key())
 
-        task1, _ = state.claim(now=200.0, idempotency_key=_key())
-        task2, _ = state.claim(now=200.0, idempotency_key=_key())
-        task3, _ = state.claim(now=200.0, idempotency_key=_key())
+        task1 = state.claim(now=200.0, idempotency_key=_key())
+        task2 = state.claim(now=200.0, idempotency_key=_key())
+        task3 = state.claim(now=200.0, idempotency_key=_key())
 
-        assert task1.task_id == "t1"
-        assert task2.task_id == "t2"
-        assert task3.task_id == "t3"
+        assert task1.task.task_id == "t1"
+        assert task2.task.task_id == "t2"
+        assert task3.task.task_id == "t3"
 
 
 class TestClaimFinishLifecycle:
     def test_claim_then_finish(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
-        task, _ = state.claim(now=200.0, idempotency_key=_key())
-        assert task.status == TaskStatus.claimed
+        task = state.claim(now=200.0, idempotency_key=_key())
+        assert task.task.status == TaskStatus.claimed
         state.finish("t1", sequence=0)
         snapshot = state.snapshot()
         assert snapshot.tasks[0].status == TaskStatus.completed
@@ -83,6 +83,17 @@ class TestClaimFinishLifecycle:
         snapshot = state.snapshot()
         assert snapshot.tasks[0].status == TaskStatus.completed
 
+    def test_finish_replay_does_not_mutate(self) -> None:
+        """An idempotent finish replay must not report a mutation,
+        so the flusher doesn't double-dec the claimed gauge."""
+        state = _make_state()
+        state.push("t1", {}, now=100.0, idempotency_key=_key())
+        state.claim(now=200.0, idempotency_key=_key())
+        first = state.finish("t1", sequence=0)
+        assert first.mutated
+        replay = state.finish("t1", sequence=0)
+        assert not replay.mutated
+
     def test_finish_after_compaction_is_idempotent(self) -> None:
         """Retry of a finish after the task was compacted away."""
         state = _make_state()
@@ -109,17 +120,27 @@ class TestClaimIdempotency:
     def test_same_key_returns_same_task(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
-        task1, _ = state.claim(now=200.0, idempotency_key="k1")
-        task2, _ = state.claim(now=200.0, idempotency_key="k1")
-        assert task1.task_id == task2.task_id
+        result1 = state.claim(now=200.0, idempotency_key="k1")
+        result2 = state.claim(now=200.0, idempotency_key="k1")
+        assert result1.task.task_id == result2.task.task_id
+
+    def test_replay_does_not_mutate(self) -> None:
+        """An idempotent claim replay must not report a mutation,
+        so the flusher doesn't double-count metrics."""
+        state = _make_state()
+        state.push("t1", {}, now=100.0, idempotency_key=_key())
+        first = state.claim(now=200.0, idempotency_key="k1")
+        assert first.mutated
+        replay = state.claim(now=201.0, idempotency_key="k1")
+        assert not replay.mutated
 
     def test_different_keys_claim_different_tasks(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
         state.push("t2", {}, now=101.0, idempotency_key=_key())
-        task1, _ = state.claim(now=200.0, idempotency_key="k1")
-        task2, _ = state.claim(now=200.0, idempotency_key="k2")
-        assert task1.task_id != task2.task_id
+        task1 = state.claim(now=200.0, idempotency_key="k1")
+        task2 = state.claim(now=200.0, idempotency_key="k2")
+        assert task1.task.task_id != task2.task.task_id
 
     def test_replay_after_requeue_claims_new_task(self) -> None:
         """If the originally claimed task was re-queued (heartbeat timeout),
@@ -127,7 +148,7 @@ class TestClaimIdempotency:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
         state.push("t2", {}, now=101.0, idempotency_key=_key())
-        task1, _ = state.claim(now=200.0, idempotency_key="k1")
+        task1 = state.claim(now=200.0, idempotency_key="k1")
         state.confirm_delivery("t1")
         # Re-queue t1 via heartbeat timeout
         state.timeout_expired_claims(
@@ -135,8 +156,8 @@ class TestClaimIdempotency:
             next_task_id_fn=lambda: "t1-retry",
         )
         # Retry with same key — original claim is gone, should claim next
-        task_retry, _ = state.claim(now=200.0, idempotency_key="k1")
-        assert task_retry.task_id != task1.task_id
+        task_retry = state.claim(now=200.0, idempotency_key="k1")
+        assert task_retry.task.task_id != task1.task.task_id
 
 
 class TestHeartbeatTimeout:
@@ -156,12 +177,12 @@ class TestHeartbeatTimeout:
         )
 
         # Re-queued task should be claimed before t2
-        task, _ = state.claim(now=200.0, idempotency_key=_key())
-        assert task.task_id == "t1-retry"
-        assert task.payload == {"x": 1}
+        task = state.claim(now=200.0, idempotency_key=_key())
+        assert task.task.task_id == "t1-retry"
+        assert task.task.payload == {"x": 1}
 
-        task2, _ = state.claim(now=200.0, idempotency_key=_key())
-        assert task2.task_id == "t2"
+        task2 = state.claim(now=200.0, idempotency_key=_key())
+        assert task2.task.task_id == "t2"
 
     def test_heartbeat_prevents_timeout(self) -> None:
         state = _make_state()

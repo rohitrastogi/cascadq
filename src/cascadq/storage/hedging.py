@@ -8,6 +8,8 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from cascadq import metrics
+from cascadq.errors import ConflictError
 from cascadq.storage.protocol import VersionToken
 
 logger = logging.getLogger(__name__)
@@ -39,58 +41,54 @@ async def hedged_write(
 
     done, _ = await asyncio.wait({primary}, timeout=hedge_after)
     if done:
+        metrics.hedge_total.labels(outcome="no_hedge_needed").inc()
         return primary.result()
 
     # Primary is slow — fire a hedge
+    metrics.hedge_total.labels(outcome="hedge_fired").inc()
     logger.debug("hedging write for %s after %.1fs", key, time.monotonic() - t0)
     hedge = asyncio.create_task(write_fn(key, data, expected_version))
 
-    # Wait for BOTH to settle — a first-completed conflict doesn't
-    # mean the hedge will also fail (it may be a self-conflict).
-    tasks = {primary, hedge}
-    result, error = await _collect_results(tasks)
+    winner, pending = await asyncio.wait(
+        {primary, hedge},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    first = next(iter(winner))
+    try:
+        result = first.result()
+    except asyncio.CancelledError:
+        raise RuntimeError("hedged write task was unexpectedly cancelled") from None
+    except ConflictError as first_conflict:
+        other = next(iter(pending))
+        try:
+            return await other
+        except asyncio.CancelledError:
+            raise RuntimeError(
+                "hedged write task was unexpectedly cancelled"
+            ) from None
+        except BaseException:
+            raise first_conflict from None
+    except BaseException as first_error:
+        other = next(iter(pending))
+        try:
+            return await other
+        except asyncio.CancelledError:
+            raise RuntimeError(
+                "hedged write task was unexpectedly cancelled"
+            ) from None
+        except BaseException:
+            raise first_error from None
 
-    if result is not None:
-        logger.info("hedged write landed for %s %.3fs", key, time.monotonic() - t0)
-        return result
+    for task in pending:
+        task.cancel()
+    for task in pending:
+        try:
+            await task
+        except (asyncio.CancelledError, BaseException):
+            pass
 
-    assert error is not None
-    raise error
-
-
-async def _collect_results(
-    tasks: set[asyncio.Task[VersionToken]],
-) -> tuple[VersionToken | None, BaseException | None]:
-    """Wait for all tasks, return (first_success, first_error).
-
-    Cancels remaining tasks as soon as one succeeds.  If all fail,
-    returns the first non-cancellation error.
-    """
-    result: VersionToken | None = None
-    error: BaseException | None = None
-
-    while tasks:
-        done, tasks = await asyncio.wait(
-            tasks, return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in done:
-            try:
-                result = t.result()
-            except asyncio.CancelledError:
-                pass
-            except BaseException as e:
-                if error is None:
-                    error = e
-
-        if result is not None:
-            # Winner found — cancel the rest
-            for t in tasks:
-                t.cancel()
-            for t in tasks:
-                try:
-                    await t
-                except (asyncio.CancelledError, BaseException):
-                    pass
-            return result, None
-
-    return None, error
+    outcome = "hedge_won" if first is hedge else "primary_won"
+    metrics.hedge_total.labels(outcome=outcome).inc()
+    if first is hedge:
+        logger.info("hedge beat primary for %s %.3fs", key, time.monotonic() - t0)
+    return result

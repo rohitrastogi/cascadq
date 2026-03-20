@@ -1,15 +1,12 @@
 """CLI entrypoint for the CAScadq broker.
 
 Usage:
-    python -m cascadq                     # in-memory store (development)
-    python -m cascadq --storage s3        # S3-compatible store (requires env vars)
+    python -m cascadq --config config.yaml     # recommended
+    python -m cascadq                           # in-memory store (development)
 
-S3 environment variables:
-    CASCADQ_S3_BUCKET           (required)
-    CASCADQ_S3_ACCESS_KEY_ID    (required)
-    CASCADQ_S3_SECRET_ACCESS_KEY (required)
-    CASCADQ_S3_ENDPOINT_URL     (optional, for R2/MinIO)
-    CASCADQ_S3_REGION           (optional, default "auto")
+S3 credentials (always from environment variables):
+    CASCADQ_S3_ACCESS_KEY_ID    (required for S3 backend)
+    CASCADQ_S3_SECRET_ACCESS_KEY (required for S3 backend)
 """
 
 from __future__ import annotations
@@ -19,6 +16,7 @@ import logging
 import os
 import sys
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 from typing import cast
 
 try:
@@ -31,7 +29,11 @@ except ImportError:
     )
     sys.exit(1)
 
-from cascadq.config import BrokerConfig
+from cascadq.config import (
+    BrokerConfig,
+    ServerConfig,
+    load_server_config,
+)
 from cascadq.server.app import create_app
 from cascadq.storage.memory import InMemoryObjectStore
 from cascadq.storage.protocol import ObjectStore
@@ -46,93 +48,105 @@ _LOG_LEVELS = {
 }
 
 
-def _build_s3_store() -> ObjectStore:
-    """Build an S3ObjectStore from environment variables.
-
-    Validates that all required env vars are set before constructing
-    the store. Uses S3Config for typed field definitions.
-    """
-    from cascadq.config import S3Config
-    from cascadq.storage.s3 import S3ObjectStore
-
-    required = {
-        "bucket": "CASCADQ_S3_BUCKET",
-        "access_key_id": "CASCADQ_S3_ACCESS_KEY_ID",
-        "secret_access_key": "CASCADQ_S3_SECRET_ACCESS_KEY",
-    }
-    missing = [v for v in required.values() if not os.environ.get(v)]
-    if missing:
-        logger.error(
-            "Missing required S3 env vars: %s", ", ".join(missing)
-        )
-        sys.exit(1)
-
-    config = S3Config(
-        bucket=os.environ[required["bucket"]],
-        access_key_id=os.environ[required["access_key_id"]],
-        secret_access_key=os.environ[required["secret_access_key"]],
-        endpoint_url=os.environ.get("CASCADQ_S3_ENDPOINT_URL"),
-        region=os.environ.get("CASCADQ_S3_REGION", "auto"),
-    )
-    return S3ObjectStore(
-        bucket=config.bucket,
-        access_key_id=config.access_key_id,
-        secret_access_key=config.secret_access_key,
-        endpoint_url=config.endpoint_url,
-        region=config.region,
-        hedge_after_seconds=config.hedge_after_seconds,
-    )
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="cascadq",
         description="CAScadq broker — object-storage-backed task queue",
     )
     parser.add_argument(
+        "--config",
+        default=os.environ.get("CASCADQ_CONFIG"),
+        help="path to YAML config file (or set CASCADQ_CONFIG env var)",
+    )
+    parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="bind host (default: 0.0.0.0)",
+        default=None,
+        help="bind host (overrides config file, default: 0.0.0.0)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="bind port (default: 8000)",
-    )
-    parser.add_argument(
-        "--storage",
-        choices=["memory", "s3"],
-        default="memory",
-        help="storage backend (default: memory)",
-    )
-    parser.add_argument(
-        "--storage-prefix",
-        default="",
-        help="key prefix in object storage (default: none)",
+        default=None,
+        help="bind port (overrides config file, default: 8000)",
     )
     parser.add_argument(
         "--log-level",
-        default="info",
+        default=None,
         choices=list(_LOG_LEVELS),
-        help="log level (default: info)",
+        help="log level (overrides config file, default: info)",
     )
     return parser.parse_args()
 
 
+def _load_config(args: argparse.Namespace) -> ServerConfig:
+    """Load config from YAML file, then apply CLI overrides."""
+    cfg = load_server_config(Path(args.config)) if args.config else ServerConfig()
+
+    server_overrides: dict[str, object] = {}
+    if args.host is not None:
+        server_overrides["host"] = args.host
+    if args.port is not None:
+        server_overrides["port"] = args.port
+    if args.log_level is not None:
+        server_overrides["log_level"] = args.log_level
+
+    if server_overrides:
+        cfg = cfg.model_copy(
+            update={"server": cfg.server.model_copy(update=server_overrides)}
+        )
+    return cfg
+
+
+def _build_s3_store(cfg: ServerConfig) -> ObjectStore:
+    """Build an S3ObjectStore from config file + env credentials."""
+    from cascadq.storage.s3 import S3ObjectStore
+
+    access_key_id = os.environ.get("CASCADQ_S3_ACCESS_KEY_ID", "")
+    secret_access_key = os.environ.get("CASCADQ_S3_SECRET_ACCESS_KEY", "")
+
+    missing: list[str] = []
+    if not cfg.storage.bucket:
+        missing.append("storage.bucket (in config file)")
+    if not access_key_id:
+        missing.append("CASCADQ_S3_ACCESS_KEY_ID (env var)")
+    if not secret_access_key:
+        missing.append("CASCADQ_S3_SECRET_ACCESS_KEY (env var)")
+    if missing:
+        logger.error("Missing required S3 settings: %s", ", ".join(missing))
+        sys.exit(1)
+
+    return S3ObjectStore(
+        bucket=cfg.storage.bucket,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+        endpoint_url=cfg.storage.endpoint_url,
+        region=cfg.storage.region,
+        hedge_after_seconds=cfg.storage.hedge_after_seconds,
+    )
+
+
+def _to_broker_config(cfg: ServerConfig) -> BrokerConfig:
+    """Convert YAML-facing ServerConfig to the internal BrokerConfig."""
+    return BrokerConfig(
+        **cfg.broker.model_dump(),
+        host=cfg.server.host,
+        port=cfg.server.port,
+        storage_prefix=cfg.storage.prefix,
+    )
+
+
 def main() -> None:
     args = _parse_args()
-    logging.basicConfig(level=_LOG_LEVELS[args.log_level])
-    # Silence noisy third-party loggers
+    cfg = _load_config(args)
+
+    logging.basicConfig(level=_LOG_LEVELS[cfg.server.log_level])
     for name in ("botocore", "aiobotocore", "urllib3"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     store: ObjectStore
     store_lifecycle: AbstractAsyncContextManager | None = None
-    if args.storage == "s3":
-        store = _build_s3_store()
-        # S3ObjectStore implements __aenter__/__aexit__ for session
-        # management; create_app's lifespan will call start()/close().
+    if cfg.storage.backend == "s3":
+        store = _build_s3_store(cfg)
         store_lifecycle = cast(AbstractAsyncContextManager, store)
     else:
         logger.info(
@@ -140,15 +154,11 @@ def main() -> None:
         )
         store = InMemoryObjectStore()
 
-    config = BrokerConfig(
-        host=args.host,
-        port=args.port,
-        storage_prefix=args.storage_prefix,
-    )
+    broker_config = _to_broker_config(cfg)
     app = create_app(
-        store=store, config=config, store_lifecycle=store_lifecycle
+        store=store, config=broker_config, store_lifecycle=store_lifecycle
     )
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port)
 
 
 if __name__ == "__main__":

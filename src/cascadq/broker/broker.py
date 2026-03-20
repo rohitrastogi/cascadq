@@ -7,6 +7,7 @@ from collections.abc import Callable
 from time import time
 from uuid import uuid4
 
+from cascadq import metrics
 from cascadq.broker import queue_key
 from cascadq.broker.compaction import CompactionWorker
 from cascadq.broker.heartbeat import HeartbeatWorker
@@ -23,6 +24,7 @@ from cascadq.models import (
     QueueFile,
     QueueMetadata,
     Task,
+    TaskStatus,
     deserialize_queue_file,
     serialize_queue_file,
 )
@@ -71,6 +73,11 @@ class Broker:
                 idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
             )
             self._queue_flushers[name] = self._make_flusher(state)
+            pending = sum(1 for t in qf.tasks if t.status == TaskStatus.pending)
+            claimed = sum(1 for t in qf.tasks if t.status == TaskStatus.claimed)
+            metrics.queue_pending_tasks.labels(queue=name).set(pending)
+            metrics.queue_claimed_tasks.labels(queue=name).set(claimed)
+            metrics.set_queue_status(name, "healthy")
             logger.info("Discovered queue %s with %d tasks", name, len(qf.tasks))
 
         self._compaction = CompactionWorker(
@@ -188,10 +195,10 @@ class Broker:
         while True:
             now = self._clock()
             try:
-                task, waiter = flusher.claim(now, idempotency_key)
-                await waiter.wait()
-                flusher.confirm_delivery(task.task_id)
-                return task
+                result = flusher.claim(now, idempotency_key)
+                await result.waiter.wait()
+                flusher.confirm_delivery(result.task.task_id)
+                return result.task
             except QueueEmptyError as empty:
                 remaining = None
                 if deadline is not None:

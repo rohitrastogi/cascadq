@@ -1,10 +1,91 @@
 """Configuration models for CAScadq broker and client."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
 from pydantic import BaseModel
 
+# ---------------------------------------------------------------------------
+# YAML config file models (untrusted boundary — Pydantic for validation)
+# ---------------------------------------------------------------------------
 
-class BrokerConfig(BaseModel, frozen=True):
-    """Broker-side configuration."""
+
+class ServerListenConfig(BaseModel, frozen=True, extra="forbid"):
+    """Server network and logging settings."""
+
+    host: str = "0.0.0.0"
+    port: int = 8000
+    log_level: Literal["debug", "info", "warning", "error"] = "info"
+
+
+class StorageConfig(BaseModel, frozen=True, extra="forbid"):
+    """Object storage settings.
+
+    S3 credentials (``CASCADQ_S3_ACCESS_KEY_ID``,
+    ``CASCADQ_S3_SECRET_ACCESS_KEY``) are always read from environment
+    variables and never appear in this model.
+    """
+
+    backend: Literal["memory", "s3"] = "memory"
+    prefix: str = ""
+    bucket: str = ""
+    endpoint_url: str | None = None
+    region: str = "auto"
+    hedge_after_seconds: float = 2.0
+
+
+class BrokerTuningConfig(BaseModel, frozen=True, extra="forbid"):
+    """Broker behavior tuning (``broker:`` section of the YAML config)."""
+
+    heartbeat_timeout_seconds: float = 30.0
+    heartbeat_check_interval_seconds: float = 5.0
+    compaction_interval_seconds: float = 60.0
+    max_consecutive_flush_failures: int = 3
+    flush_retry_delay_seconds: float = 1.0
+    flush_recovery_interval_seconds: float = 5.0
+    idempotency_ttl_seconds: float = 300.0
+
+
+class ServerConfig(BaseModel, frozen=True, extra="forbid"):
+    """Top-level configuration loaded from a YAML file.
+
+    S3 credentials are always read from environment variables and are
+    intentionally excluded from the config file.
+    """
+
+    server: ServerListenConfig = ServerListenConfig()
+    storage: StorageConfig = StorageConfig()
+    broker: BrokerTuningConfig = BrokerTuningConfig()
+
+
+def load_server_config(path: Path) -> ServerConfig:
+    """Load and validate server configuration from a YAML file.
+
+    Returns a default ``ServerConfig`` if the file is empty.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        pydantic.ValidationError: If the file contents are invalid.
+    """
+    import yaml  # server-only dependency
+
+    raw = yaml.safe_load(path.read_text())
+    if raw is None:
+        return ServerConfig()
+    return ServerConfig.model_validate(raw)
+
+
+# ---------------------------------------------------------------------------
+# Internal configs (trusted state — plain dataclasses)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BrokerConfig:
+    """Internal runtime config passed to the broker."""
 
     host: str = "0.0.0.0"
     port: int = 8000
@@ -18,7 +99,8 @@ class BrokerConfig(BaseModel, frozen=True):
     storage_prefix: str = ""
 
 
-class ClientConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class ClientConfig:
     """Client-side configuration."""
 
     base_url: str = "http://localhost:8000"
@@ -26,22 +108,3 @@ class ClientConfig(BaseModel, frozen=True):
     max_retries: int = 3
     retry_base_delay_seconds: float = 0.5
     retry_max_delay_seconds: float = 30.0
-
-
-class S3Config(BaseModel, frozen=True):
-    """S3-compatible storage configuration.
-
-    Set ``endpoint_url`` for non-AWS services (R2, MinIO, etc.).
-    Leave it as ``None`` for standard AWS S3.
-
-    ``hedge_after_seconds`` enables speculative write retries: if a
-    conditional write hasn't completed after this many seconds, a
-    second write is fired in parallel.  Set to ``0`` to disable.
-    """
-
-    bucket: str
-    endpoint_url: str | None = None
-    access_key_id: str
-    secret_access_key: str
-    region: str = "auto"
-    hedge_after_seconds: float = 2.0

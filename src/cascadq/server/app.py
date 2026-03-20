@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 
+from prometheus_client import make_asgi_app
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from cascadq.broker.broker import Broker
 from cascadq.config import BrokerConfig
@@ -45,14 +46,19 @@ def create_app(
             if owns_broker:
                 await broker.stop()
 
+    metrics_app = make_asgi_app()
+
     app = Starlette(
         routes=[
+            Route("/healthz", routes.healthz, methods=["GET"]),
+            Route("/readyz", routes.readyz, methods=["GET"]),
             Route("/queues", routes.create_queue, methods=["POST"]),
             Route("/queues/{name}", routes.delete_queue, methods=["DELETE"]),
             Route("/queues/{name}/push", routes.push, methods=["POST"]),
             Route("/queues/{name}/claim", routes.claim, methods=["POST"]),
             Route("/queues/{name}/heartbeat", routes.heartbeat, methods=["POST"]),
             Route("/queues/{name}/finish", routes.finish, methods=["POST"]),
+            Mount("/metrics", app=metrics_app),
         ],
         lifespan=lifespan,
     )
