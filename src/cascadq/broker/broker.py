@@ -215,13 +215,16 @@ class Broker:
                 self._check_fenced()
 
     async def heartbeat(self, queue_name: str, task_id: str) -> None:
-        """Update heartbeat for a claimed task. Blocks until flushed."""
+        """Update heartbeat for a claimed task.
+
+        Returns immediately after the in-memory update. The updated
+        timestamp is flushed to storage as part of the next normal
+        flush cycle for recovery, but does not block the RPC.
+        """
         self._check_fenced()
         state = self._get_state(queue_name)
         now = self._clock()
-        waiter = state.heartbeat(task_id, now)
-        self._get_coordinator().notify()
-        await waiter.wait()
+        state.heartbeat(task_id, now)
 
     async def finish(
         self,

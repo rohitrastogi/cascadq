@@ -265,18 +265,48 @@ Heartbeat is not part of the general idempotency mechanism.
 Why:
 
 - duplicate heartbeats are mostly harmless
+- heartbeat is a lease-renewal signal, not a producer/consumer commit point
 - the real heartbeat problem is timing, not duplicate logical mutation
 
-Current timing rule:
+Desired behavior:
 
-- the effective server-observed heartbeat cadence is approximately `heartbeat_interval + request_latency + flush_latency`
+- a heartbeat updates `last_heartbeat` in memory immediately
+- the heartbeat RPC returns success immediately after the in-memory update
+- the updated heartbeat timestamp is still flushed eventually as part of normal queue-state persistence
+
+This means heartbeat should be:
+
+- **synchronous for in-memory lease renewal**
+- **asynchronous for durable persistence**
+
+Rationale:
+
+- in-memory heartbeat state is what the timeout worker should use for real-time liveness
+- flushed heartbeat state is backup state for restart/recovery and worst-case cleanup
+- blocking the heartbeat RPC on object-store flush couples worker liveness to storage latency and increases false timeout risk
+
+Current timing problem:
+
+- if a heartbeat request waits on flush, the effective server-observed cadence becomes roughly `heartbeat_interval + request_latency + flush_latency`
+- under load, that can make healthy workers look dead
+
+Timeout semantics:
+
+- the timeout worker should continue using the latest accepted in-memory `last_heartbeat`
+- if `now - last_heartbeat > heartbeat_timeout_seconds`, the claim is considered dead
+- dead claims are cleaned up by deleting the old claimed task and re-queuing the same payload as a new pending task at the front of the queue
+
+Durability semantics:
+
+- heartbeat timestamps should still be flushed eventually
+- their durable role is not to gate the heartbeat RPC, but to provide backup lease state for broker restart and recovery
 
 Therefore:
 
-- `heartbeat_timeout_seconds` must be comfortably larger than the worst expected cadence under load
-- stress tests should validate this explicitly
+- `heartbeat_timeout_seconds` must still be comfortably larger than the worst expected observed cadence under load
+- stress tests should validate timeout safety explicitly
 
-Future improvements may change heartbeat scheduling, but heartbeat should stay outside the main idempotency design unless a concrete need appears.
+Future improvements may change client-side heartbeat scheduling, but heartbeat should remain outside the main idempotency design unless a concrete need appears.
 
 ## Durable State Rules
 

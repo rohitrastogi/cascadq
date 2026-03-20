@@ -89,6 +89,7 @@ class QueueState:
         ]
         heapq.heapify(self._pending_heap)
         self._push_event = asyncio.Event()
+        self._sorted_task_ids: list[str] | None = None
 
     @property
     def metadata(self) -> QueueMetadata:
@@ -126,6 +127,7 @@ class QueueState:
         )
         self._next_sequence += 1
         self._tasks[task.task_id] = task
+        self._sorted_task_ids = None
         heapq.heappush(self._pending_heap, (task.sequence, task.task_id))
         self._push_event.set()
         if idempotency_key is not None:
@@ -163,8 +165,14 @@ class QueueState:
         self._dirty = True
         return claimed, self._append_waiter()
 
-    def heartbeat(self, task_id: str, now: float) -> FlushWaiter:
-        """Update the heartbeat timestamp for a claimed task."""
+    def heartbeat(self, task_id: str, now: float) -> None:
+        """Update the heartbeat timestamp for a claimed task.
+
+        Returns immediately after the in-memory update — no waiter is
+        created.  The updated timestamp is flushed to durable storage
+        as part of the next normal flush cycle (backup for recovery),
+        but the heartbeat RPC should not block on that flush.
+        """
         task = self._get_task(task_id)
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
@@ -172,7 +180,6 @@ class QueueState:
             )
         self._tasks[task_id] = task.heartbeat(now)
         self._dirty = True
-        return self._append_waiter()
 
     def finish(
         self,
@@ -250,6 +257,7 @@ class QueueState:
             self._tasks[new_id] = new_task
             heapq.heappush(self._pending_heap, (next_seq, new_id))
             next_seq -= 1
+        self._sorted_task_ids = None
         self._push_event.set()
         self._dirty = True
 
@@ -297,6 +305,7 @@ class QueueState:
             if t.status == TaskStatus.pending
         ]
         heapq.heapify(self._pending_heap)
+        self._sorted_task_ids = None
         logger.info(
             "Compacted %d completed tasks from queue %s",
             len(completed),
@@ -305,8 +314,16 @@ class QueueState:
         self._dirty = True
 
     def snapshot(self) -> QueueFile:
-        """Return the current state as an immutable QueueFile."""
-        tasks = sorted(self._tasks.values(), key=lambda t: t.sequence)
+        """Return the current state as an immutable QueueFile.
+
+        Caches the sorted task-id order so flushes triggered by
+        data-only changes (heartbeat, claim, finish) skip the sort.
+        """
+        if self._sorted_task_ids is None:
+            self._sorted_task_ids = sorted(
+                self._tasks, key=lambda tid: self._tasks[tid].sequence,
+            )
+        tasks = [self._tasks[tid] for tid in self._sorted_task_ids]
         return QueueFile(
             metadata=self._metadata,
             next_sequence=self._next_sequence,
