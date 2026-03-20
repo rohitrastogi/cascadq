@@ -83,8 +83,8 @@ async def push(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        task_id = await broker.push(name, body.payload)
-        return JSONResponse({"task_id": task_id}, status_code=200)
+        await broker.push(name, body.payload, body.idempotency_key)
+        return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
 

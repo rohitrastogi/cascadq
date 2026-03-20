@@ -94,16 +94,15 @@ class QueueState:
         payload: dict,
         now: float,
         idempotency_key: str | None = None,
-    ) -> tuple[str, FlushWaiter]:
+    ) -> FlushWaiter:
         """Add a new task to the queue. Validates payload against schema.
 
-        Returns ``(task_id, waiter)``.  If *idempotency_key* was already
-        used, returns the original task_id without creating a duplicate.
+        If *idempotency_key* was already used, this is a no-op.
         """
         if idempotency_key is not None:
             existing = self._idempotency_keys.get(idempotency_key)
             if existing is not None:
-                return existing.task_id, self._append_waiter()
+                return self._append_waiter()
 
         schema = self._metadata.payload_schema
         if schema:
@@ -127,7 +126,7 @@ class QueueState:
                 task_id=task_id, created_at=now,
             )
         self._dirty = True
-        return task_id, self._append_waiter()
+        return self._append_waiter()
 
     def claim(self, consumer_id: str, now: float) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number."""

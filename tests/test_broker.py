@@ -39,8 +39,7 @@ class TestBrokerLifecycle:
         )
         await broker.start()
 
-        task_id = await broker.push("existing", {"data": 1})
-        assert task_id
+        await broker.push("existing", {"data": 1})
         await broker.stop()
 
 
@@ -50,8 +49,7 @@ class TestCreateDeleteQueue:
     ) -> None:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("work")
-        task_id = await broker.push("work", {"job": "test"})
-        assert isinstance(task_id, str)
+        await broker.push("work", {"job": "test"})
         await broker.stop()
 
     async def test_create_duplicate_raises(
@@ -89,9 +87,8 @@ class TestPushClaimFinish:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
 
-        task_id = await broker.push("q", {"url": "http://example.com"})
+        await broker.push("q", {"url": "http://example.com"})
         task = await broker.claim("q", "worker-1")
-        assert task.task_id == task_id
         assert task.status == TaskStatus.claimed
         assert task.payload == {"url": "http://example.com"}
 

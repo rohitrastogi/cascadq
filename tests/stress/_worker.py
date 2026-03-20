@@ -68,10 +68,9 @@ async def _run_producer(config: dict) -> None:
         with open(config["event_file"], "w", buffering=1) as ef:
             for lid in config["logical_ids"]:
                 _write_event(ef, "push_started", queue, lid, worker_id=wid)
-                task_id = await client.push(queue, {"logical_id": lid})
+                await client.push(queue, {"logical_id": lid})
                 _write_event(
-                    ef, "push_succeeded", queue, lid,
-                    task_id=task_id, worker_id=wid,
+                    ef, "push_succeeded", queue, lid, worker_id=wid,
                 )
     finally:
         await client.close()

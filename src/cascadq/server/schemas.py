@@ -14,6 +14,7 @@ class CreateQueueRequest(BaseModel):
 
 class PushRequest(BaseModel):
     payload: dict[str, Any]
+    idempotency_key: str | None = None
 
 
 class ClaimRequest(BaseModel):

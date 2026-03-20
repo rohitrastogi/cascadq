@@ -81,21 +81,20 @@ class CascadqClient:
             "DELETE", f"/queues/{name}", expected_status=204
         )
 
-    async def push(self, queue_name: str, payload: dict) -> str:
-        """Push a task and return the task_id.
+    async def push(self, queue_name: str, payload: dict) -> None:
+        """Push a task to a queue.
 
         Raises:
             QueueNotFoundError: Queue does not exist.
             PayloadValidationError: Payload doesn't match the queue's schema.
             BrokerFencedError: Broker is fenced (after retries).
         """
-        resp = await self._request(
+        await self._request(
             "POST",
             f"/queues/{queue_name}/push",
             json={"payload": payload},
-            expected_status=200,
+            expected_status=204,
         )
-        return resp.json()["task_id"]
 
     async def claim(self, queue_name: str) -> ClaimedTask | None:
         """Claim the next pending task, or return None if the queue is empty.
