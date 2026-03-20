@@ -6,6 +6,7 @@ import asyncio
 import heapq
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import jsonschema
 
@@ -25,6 +26,23 @@ from cascadq.models import (
 from cascadq.storage.protocol import VersionToken
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class ClaimResult:
+    """Result of a claim operation."""
+
+    task: Task
+    waiter: FlushWaiter
+    mutated: bool
+
+
+@dataclass(slots=True)
+class FinishResult:
+    """Result of a finish operation."""
+
+    waiter: FlushWaiter
+    mutated: bool
 
 
 class FlushWaiter:
@@ -147,7 +165,7 @@ class QueueState:
 
     def claim(
         self, now: float, idempotency_key: str,
-    ) -> tuple[Task, FlushWaiter]:
+    ) -> ClaimResult:
         """Claim the pending task with the lowest sequence number.
 
         Sets ``last_heartbeat`` immediately so the lease timestamp is
@@ -159,7 +177,7 @@ class QueueState:
         if existing_id is not None:
             task = self._tasks.get(existing_id)
             if task is not None and task.status == TaskStatus.claimed:
-                return task, self._append_waiter()
+                return ClaimResult(task, self._append_waiter(), False)
             del self._claim_key_index[idempotency_key]
 
         task = self._pop_next_pending()
@@ -170,7 +188,7 @@ class QueueState:
         self._claim_key_index[idempotency_key] = claimed.task_id
         self._pending_delivery.add(claimed.task_id)
         self._mark_dirty()
-        return claimed, self._append_waiter()
+        return ClaimResult(claimed, self._append_waiter(), True)
 
     def confirm_delivery(self, task_id: str) -> None:
         """Mark a claim as delivered to the client (in-memory only).
@@ -200,35 +218,33 @@ class QueueState:
         self,
         task_id: str,
         sequence: int,
-    ) -> FlushWaiter:
+    ) -> FinishResult:
         """Mark a claimed task as completed.
 
         Idempotent: finishing an already-completed task or a task that
         has been compacted away (sequence <= watermark) is a no-op.
-        This handles retries where the first attempt succeeded but
-        the client never received the response.
         """
         task = self._tasks.get(task_id)
         if task is None:
             if sequence <= self._compacted_through_sequence:
-                return self._append_waiter()
+                return FinishResult(self._append_waiter(), False)
             raise TaskNotFoundError(
                 f"task {task_id!r} not found in queue {self.name!r}"
             )
         if task.status == TaskStatus.completed:
-            return self._append_waiter()
+            return FinishResult(self._append_waiter(), False)
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
                 f"task {task_id!r} is not claimed (status={task.status.value})"
             )
         self._tasks[task_id] = task.finish()
         self._mark_dirty()
-        return self._append_waiter()
+        return FinishResult(self._append_waiter(), True)
 
     def timeout_expired_claims(
         self, now: float, timeout_seconds: float, next_task_id_fn: Callable[[], str]
-    ) -> None:
-        """Re-queue tasks whose heartbeat has expired.
+    ) -> int:
+        """Re-queue tasks whose heartbeat has expired. Returns the count.
 
         Re-queued tasks get sequence numbers lower than all current tasks
         so they sort to the front of the queue.
@@ -242,7 +258,7 @@ class QueueState:
             and (now - t.last_heartbeat) > timeout_seconds
         ]
         if not expired:
-            return
+            return 0
         # Place re-queued tasks ahead of all pending tasks.
         # The heap minimum is O(1); fall back to scanning _tasks
         # only when the heap is empty (all tasks are claimed/completed).
@@ -280,6 +296,7 @@ class QueueState:
         self._sorted_task_ids = None
         self._push_event.set()
         self._mark_dirty()
+        return len(expired)
 
     async def wait_for_push(self, timeout: float | None) -> None:
         """Block until a push or re-queue signals new pending work.
@@ -299,12 +316,18 @@ class QueueState:
         """
         self._push_event.set()
 
-    def compact(self, now: float) -> None:
-        """Remove completed tasks and expired idempotency keys."""
-        completed = [
-            t for t in self._tasks.values()
-            if t.status == TaskStatus.completed
-        ]
+    def compact(self, now: float) -> int:
+        """Remove completed tasks and expired idempotency keys.
+
+        Returns the number of completed tasks removed.
+        """
+        completed: list[Task] = []
+        pending_heap: list[tuple[int, str]] = []
+        for t in self._tasks.values():
+            if t.status == TaskStatus.completed:
+                completed.append(t)
+            elif t.status == TaskStatus.pending:
+                pending_heap.append((t.sequence, t.task_id))
         # Expire idempotency keys older than the TTL
         cutoff = now - self._idempotency_ttl
         expired_keys = [
@@ -312,7 +335,7 @@ class QueueState:
             if r.created_at < cutoff
         ]
         if not completed and not expired_keys:
-            return
+            return 0
         if completed:
             max_seq = max(t.sequence for t in completed)
             if max_seq > self._compacted_through_sequence:
@@ -325,13 +348,9 @@ class QueueState:
                 del self._tasks[t.task_id]
         for k in expired_keys:
             del self._idempotency_keys[k]
-        # Rebuild the heap to discard stale entries that accumulate
-        # from claimed tasks and heartbeat-timeout re-queues.
-        self._pending_heap = [
-            (t.sequence, t.task_id)
-            for t in self._tasks.values()
-            if t.status == TaskStatus.pending
-        ]
+        # pending_heap was built from the single pass above and
+        # excludes completed tasks (already filtered).
+        self._pending_heap = pending_heap
         heapq.heapify(self._pending_heap)
         self._sorted_task_ids = None
         logger.info(
@@ -340,6 +359,7 @@ class QueueState:
             self.name,
         )
         self._mark_dirty()
+        return len(completed)
 
     def snapshot(self) -> QueueFile:
         """Return the current state as an immutable QueueFile.

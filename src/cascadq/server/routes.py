@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from pydantic import ValidationError
 from starlette.requests import Request
@@ -20,6 +21,7 @@ from cascadq.errors import (
     TaskNotClaimedError,
     TaskNotFoundError,
 )
+from cascadq.metrics import rpc_duration_seconds
 from cascadq.server.schemas import (
     ClaimRequest,
     CreateQueueRequest,
@@ -81,12 +83,17 @@ async def push(request: Request) -> Response:
         body = PushRequest.model_validate_json(await request.body())
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    t0 = time.monotonic()
     try:
         broker = _get_broker(request)
         await broker.push(name, body.payload, body.idempotency_key)
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
+    finally:
+        rpc_duration_seconds.labels(operation="push").observe(
+            time.monotonic() - t0,
+        )
 
 
 async def claim(request: Request) -> Response:
@@ -95,6 +102,7 @@ async def claim(request: Request) -> Response:
         body = ClaimRequest.model_validate_json(await request.body())
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    t0 = time.monotonic()
     try:
         broker = _get_broker(request)
         task = await broker.claim(
@@ -112,6 +120,10 @@ async def claim(request: Request) -> Response:
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
+    finally:
+        rpc_duration_seconds.labels(operation="claim").observe(
+            time.monotonic() - t0,
+        )
 
 
 async def heartbeat(request: Request) -> Response:
@@ -120,12 +132,17 @@ async def heartbeat(request: Request) -> Response:
         body = HeartbeatRequest.model_validate_json(await request.body())
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    t0 = time.monotonic()
     try:
         broker = _get_broker(request)
         await broker.heartbeat(name, body.task_id)
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
+    finally:
+        rpc_duration_seconds.labels(operation="heartbeat").observe(
+            time.monotonic() - t0,
+        )
 
 
 async def finish(request: Request) -> Response:
@@ -134,9 +151,14 @@ async def finish(request: Request) -> Response:
         body = FinishRequest.model_validate_json(await request.body())
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    t0 = time.monotonic()
     try:
         broker = _get_broker(request)
         await broker.finish(name, body.task_id, body.sequence)
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
+    finally:
+        rpc_duration_seconds.labels(operation="finish").observe(
+            time.monotonic() - t0,
+        )

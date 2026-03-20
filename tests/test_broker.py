@@ -1,6 +1,7 @@
 """Tests for Broker lifecycle and public API."""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -169,12 +170,11 @@ class TestBrokerFencing:
         Once recovered, the queue accepts requests again."""
         broker = await _start_broker(
             memory_store,
-            test_config.model_copy(
-                update={
-                    "max_consecutive_flush_failures": 2,
-                    "flush_retry_delay_seconds": 0.01,
-                    "flush_recovery_interval_seconds": 0.1,
-                }
+            replace(
+                test_config,
+                max_consecutive_flush_failures=2,
+                flush_retry_delay_seconds=0.01,
+                flush_recovery_interval_seconds=0.1,
             ),
         )
         await broker.create_queue("q")

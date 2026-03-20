@@ -1,0 +1,38 @@
+# CAScadq server configuration
+#
+# Mount this file into the container and start with:
+#   --config /etc/cascadq/config.yaml
+#
+# S3 credentials are always read from environment variables:
+#   CASCADQ_S3_ACCESS_KEY_ID
+#   CASCADQ_S3_SECRET_ACCESS_KEY
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: info
+
+storage:
+  backend: s3
+  prefix: ""
+
+  # S3/R2 bucket settings
+  bucket: my-bucket
+  # For Cloudflare R2, use https://<account-id>.r2.cloudflarestorage.com
+  # For AWS S3, omit this field entirely.
+  endpoint_url: https://<account-id>.r2.cloudflarestorage.com
+  region: auto
+
+  # Hedged write threshold (seconds). If a conditional write hasn't
+  # completed after this long, a second write fires in parallel.
+  # Set to 0 to disable.
+  hedge_after_seconds: 2.0
+
+broker:
+  heartbeat_timeout_seconds: 30.0
+  heartbeat_check_interval_seconds: 5.0
+  compaction_interval_seconds: 60.0
+  max_consecutive_flush_failures: 3
+  flush_retry_delay_seconds: 1.0
+  flush_recovery_interval_seconds: 5.0
+  idempotency_ttl_seconds: 300.0
