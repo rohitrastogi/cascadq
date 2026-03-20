@@ -32,6 +32,10 @@ class S3Config(BaseModel, frozen=True):
 
     Set ``endpoint_url`` for non-AWS services (R2, MinIO, etc.).
     Leave it as ``None`` for standard AWS S3.
+
+    ``hedge_after_seconds`` enables speculative write retries: if a
+    conditional write hasn't completed after this many seconds, a
+    second write is fired in parallel.  Set to ``0`` to disable.
     """
 
     bucket: str
@@ -39,3 +43,4 @@ class S3Config(BaseModel, frozen=True):
     access_key_id: str
     secret_access_key: str
     region: str = "auto"
+    hedge_after_seconds: float = 2.0

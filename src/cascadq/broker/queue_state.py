@@ -144,15 +144,17 @@ class QueueState:
         self._mark_dirty()
         return self._append_waiter()
 
-    def claim(
-        self, now: float, idempotency_key: str,
-    ) -> tuple[Task, FlushWaiter]:
+    def claim(self, idempotency_key: str) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number.
 
         If *idempotency_key* matches a task that is still claimed,
         the same task is returned (replay).  If the original task
         was re-queued or completed, the stale index entry is removed
         and a fresh claim proceeds.
+
+        The returned task has ``last_heartbeat=None`` — the lease is
+        not active until the caller invokes ``activate_lease`` after
+        the claim is durably flushed.
         """
         existing_id = self._claim_key_index.get(idempotency_key)
         if existing_id is not None:
@@ -164,14 +166,28 @@ class QueueState:
         task = self._pop_next_pending()
         if task is None:
             raise QueueEmptyError(f"no pending tasks in queue {self.name!r}")
-        claimed = task.claim(now, claim_idempotency_key=idempotency_key)
+        claimed = task.claim(claim_idempotency_key=idempotency_key)
         self._tasks[claimed.task_id] = claimed
         self._claim_key_index[idempotency_key] = claimed.task_id
         self._mark_dirty()
         return claimed, self._append_waiter()
 
+    def activate_lease(self, task_id: str, now: float) -> None:
+        """Start the heartbeat lease for a newly committed claim.
+
+        Called by the broker after the claim is durably flushed, so
+        the heartbeat checker ignores the task until this point.
+        """
+        task = self._get_task(task_id)
+        if task.status != TaskStatus.claimed:
+            raise TaskNotClaimedError(
+                f"task {task_id!r} is not claimed (status={task.status.value})"
+            )
+        self._tasks[task_id] = task.heartbeat(now)
+        self._mark_dirty()
+
     def heartbeat(self, task_id: str, now: float) -> None:
-        """Update the heartbeat timestamp for a claimed task.
+        """Renew the heartbeat lease for a claimed task.
 
         Returns immediately after the in-memory update — no waiter is
         created.  The updated timestamp is flushed to durable storage
@@ -226,9 +242,8 @@ class QueueState:
         expired = [
             t
             for t in self._tasks.values()
-            if t.status == TaskStatus.claimed
-            and t.last_heartbeat is not None
-            and (now - t.last_heartbeat) > timeout_seconds
+            if t.lease_active
+            and (now - t.last_heartbeat) > timeout_seconds  # type: ignore[operator]
         ]
         if not expired:
             return
@@ -381,9 +396,6 @@ class QueueState:
         """Record that the given generation was durably written to storage."""
         if generation > self._flushed_generation:
             self._flushed_generation = generation
-
-    def mark_clean(self) -> None:
-        self._flushed_generation = self._generation
 
     def _pop_next_pending(self) -> Task | None:
         """Pop the lowest-sequence pending task from the heap.

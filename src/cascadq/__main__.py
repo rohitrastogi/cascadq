@@ -80,6 +80,7 @@ def _build_s3_store() -> ObjectStore:
         secret_access_key=config.secret_access_key,
         endpoint_url=config.endpoint_url,
         region=config.region,
+        hedge_after_seconds=config.hedge_after_seconds,
     )
 
 
