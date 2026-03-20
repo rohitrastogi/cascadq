@@ -5,16 +5,19 @@ description = "Object-storage-backed task queue using CAS for consistency"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "starlette>=0.40",
-    "uvicorn>=0.30",
     "httpx>=0.27",
-    "jsonschema>=4.20",
     "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
+server = [
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "jsonschema>=4.20",
+]
 s3 = ["aiobotocore>=2.13"]
 dev = [
+    "cascadq[server]",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.5",
