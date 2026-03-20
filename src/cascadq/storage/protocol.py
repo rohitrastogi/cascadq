@@ -16,16 +16,16 @@ class ObjectStore(Protocol):
 
     async def write(
         self, key: str, data: bytes, expected_version: VersionToken
-    ) -> None:
-        """Write an object conditionally.
+    ) -> VersionToken:
+        """Write an object conditionally. Returns the new version token.
 
         Raises ConflictError if the version token doesn't match
         the current version (another writer intervened).
         """
         ...
 
-    async def write_new(self, key: str, data: bytes) -> None:
-        """Write an object that must not already exist.
+    async def write_new(self, key: str, data: bytes) -> VersionToken:
+        """Write an object that must not already exist. Returns the version token.
 
         Raises ConflictError if it does.
         """
