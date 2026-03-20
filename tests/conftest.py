@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from cascadq.config import BrokerConfig
 from cascadq.models import QueueFile, QueueMetadata
 from cascadq.storage.memory import InMemoryObjectStore
 
@@ -33,4 +34,14 @@ def schema_metadata() -> QueueMetadata:
             "properties": {"url": {"type": "string"}},
             "required": ["url"],
         },
+    )
+
+
+@pytest.fixture
+def test_config() -> BrokerConfig:
+    """Broker config with background workers effectively disabled for tests."""
+    return BrokerConfig(
+        heartbeat_timeout_seconds=5.0,
+        heartbeat_check_interval_seconds=100.0,
+        compaction_interval_seconds=100.0,
     )
