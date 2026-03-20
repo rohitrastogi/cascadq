@@ -18,7 +18,7 @@ class PushRequest(BaseModel):
 
 
 class ClaimRequest(BaseModel):
-    consumer_id: str
+    pass
 
 
 class HeartbeatRequest(BaseModel):

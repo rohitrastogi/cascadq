@@ -60,7 +60,7 @@ class TestPushClaimFinish:
         assert resp.status_code == 204
 
         resp = await client.post(
-            "/queues/q/claim", json={"consumer_id": "w1"}
+            "/queues/q/claim", json={}
         )
         assert resp.status_code == 200
         claim_data = resp.json()
@@ -82,7 +82,7 @@ class TestPushClaimFinish:
     async def test_claim_empty_returns_204(self, client: AsyncClient) -> None:
         await client.post("/queues", json={"name": "q"})
         resp = await client.post(
-            "/queues/q/claim", json={"consumer_id": "w1"}
+            "/queues/q/claim", json={}
         )
         assert resp.status_code == 204
 

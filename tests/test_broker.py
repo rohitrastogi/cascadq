@@ -88,7 +88,7 @@ class TestPushClaimFinish:
         await broker.create_queue("q")
 
         await broker.push("q", {"url": "http://example.com"})
-        task = await broker.claim("q", "worker-1")
+        task = await broker.claim("q")
         assert task.status == TaskStatus.claimed
         assert task.payload == {"url": "http://example.com"}
 
@@ -101,7 +101,7 @@ class TestPushClaimFinish:
         broker = await _start_broker(memory_store, test_config)
         await broker.create_queue("q")
         with pytest.raises(QueueEmptyError):
-            await broker.claim("q", "worker-1")
+            await broker.claim("q")
         await broker.stop()
 
     async def test_push_to_nonexistent_queue_raises(

@@ -24,13 +24,11 @@ class Task:
     status: TaskStatus
     payload: dict
     last_heartbeat: float | None = None
-    claimed_by: str | None = None
 
-    def claim(self, consumer_id: str, now: float) -> Task:
+    def claim(self, now: float) -> Task:
         return replace(
             self,
             status=TaskStatus.claimed,
-            claimed_by=consumer_id,
             last_heartbeat=now,
         )
 
@@ -85,7 +83,6 @@ def serialize_queue_file(qf: QueueFile) -> bytes:
                 "status": t.status.value,
                 "payload": t.payload,
                 "last_heartbeat": t.last_heartbeat,
-                "claimed_by": t.claimed_by,
             }
             for t in qf.tasks
         ],
@@ -105,7 +102,6 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
             status=TaskStatus(t["status"]),
             payload=t["payload"],
             last_heartbeat=t.get("last_heartbeat"),
-            claimed_by=t.get("claimed_by"),
         )
         for t in data["tasks"]
     ]

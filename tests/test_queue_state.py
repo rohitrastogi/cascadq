@@ -37,9 +37,9 @@ class TestFIFOOrdering:
         state.push("t2", {"x": 2}, now=101.0)
         state.push("t3", {"x": 3}, now=102.0)
 
-        task1, _ = state.claim("w1", now=200.0)
-        task2, _ = state.claim("w2", now=201.0)
-        task3, _ = state.claim("w3", now=202.0)
+        task1, _ = state.claim(now=200.0)
+        task2, _ = state.claim(now=201.0)
+        task3, _ = state.claim(now=202.0)
 
         assert task1.task_id == "t1"
         assert task2.task_id == "t2"
@@ -50,7 +50,7 @@ class TestClaimFinishLifecycle:
     def test_claim_then_finish(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0)
-        task, _ = state.claim("w1", now=200.0)
+        task, _ = state.claim(now=200.0)
         assert task.status == TaskStatus.claimed
         state.finish("t1", sequence=0)
         snapshot = state.snapshot()
@@ -59,7 +59,7 @@ class TestClaimFinishLifecycle:
     def test_claim_empty_queue_raises(self) -> None:
         state = _make_state()
         with pytest.raises(QueueEmptyError):
-            state.claim("w1", now=100.0)
+            state.claim(now=100.0)
 
     def test_finish_unclaimed_task_raises(self) -> None:
         state = _make_state()
@@ -75,7 +75,7 @@ class TestClaimFinishLifecycle:
     def test_finish_already_completed_is_idempotent(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
         state.finish("t1", sequence=0)
         state.finish("t1", sequence=0)
         snapshot = state.snapshot()
@@ -85,7 +85,7 @@ class TestClaimFinishLifecycle:
         """Retry of a finish after the task was compacted away."""
         state = _make_state()
         state.push("t1", {}, now=100.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
         state.finish("t1", sequence=0)
         state.compact(now=300.0)
         # t1 is gone, but sequence 0 <= compacted_through_sequence (0)
@@ -95,7 +95,7 @@ class TestClaimFinishLifecycle:
         """A genuinely unknown task_id with sequence above the watermark."""
         state = _make_state()
         state.push("t1", {}, now=100.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
         state.finish("t1", sequence=0)
         state.compact(now=300.0)
         # Watermark is now 0.  Sequence 5 is above it → real error.
@@ -108,7 +108,7 @@ class TestHeartbeatTimeout:
         state = _make_state()
         state.push("t1", {"x": 1}, now=100.0)
         state.push("t2", {"x": 2}, now=101.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
 
         # t1 is claimed with last_heartbeat=200.0
         # Timeout at now=250, timeout_seconds=30 → 250-200=50 > 30
@@ -119,17 +119,17 @@ class TestHeartbeatTimeout:
         )
 
         # Re-queued task should be claimed before t2
-        task, _ = state.claim("w2", now=260.0)
+        task, _ = state.claim(now=260.0)
         assert task.task_id == "t1-retry"
         assert task.payload == {"x": 1}
 
-        task2, _ = state.claim("w3", now=261.0)
+        task2, _ = state.claim(now=261.0)
         assert task2.task_id == "t2"
 
     def test_heartbeat_prevents_timeout(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
         state.heartbeat("t1", now=225.0)
 
         # now=250, timeout=30 → 250-225=25, not expired
@@ -139,12 +139,12 @@ class TestHeartbeatTimeout:
         )
         # t1 should still be claimed, not re-queued
         with pytest.raises(QueueEmptyError):
-            state.claim("w2", now=260.0)
+            state.claim(now=260.0)
 
     def test_finish_old_task_id_after_requeue_raises(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
 
         state.timeout_expired_claims(
             now=250.0, timeout_seconds=30.0,
@@ -161,7 +161,7 @@ class TestCompaction:
         state = _make_state()
         state.push("t1", {}, now=100.0)
         state.push("t2", {}, now=101.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
         state.finish("t1", sequence=0)
 
         state.compact(now=300.0)
@@ -213,7 +213,7 @@ class TestSnapshot:
         state.push("t1", {}, now=100.0)
         state.push("t2", {}, now=101.0)
         state.push("t3", {}, now=102.0)
-        state.claim("w1", now=200.0)
+        state.claim(now=200.0)
 
         # Timeout t1 → re-queued with negative sequence
         state.timeout_expired_claims(

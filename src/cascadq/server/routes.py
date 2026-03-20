@@ -92,12 +92,12 @@ async def push(request: Request) -> Response:
 async def claim(request: Request) -> Response:
     name = request.path_params["name"]
     try:
-        body = ClaimRequest.model_validate_json(await request.body())
+        ClaimRequest.model_validate_json(await request.body())
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     try:
         broker = _get_broker(request)
-        task = await broker.claim(name, body.consumer_id)
+        task = await broker.claim(name)
         return JSONResponse(
             {
                 "task_id": task.task_id,

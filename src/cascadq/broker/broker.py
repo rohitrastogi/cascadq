@@ -175,12 +175,12 @@ class Broker:
         self._get_coordinator().notify()
         await waiter.wait()
 
-    async def claim(self, queue_name: str, consumer_id: str) -> Task:
+    async def claim(self, queue_name: str) -> Task:
         """Claim the next pending task. Blocks until the mutation is flushed."""
         self._check_fenced()
         state = self._get_state(queue_name)
         now = self._clock()
-        task, waiter = state.claim(consumer_id, now)
+        task, waiter = state.claim(now)
         self._get_coordinator().notify()
         await waiter.wait()
         return task

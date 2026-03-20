@@ -7,7 +7,6 @@ import logging
 import random
 from types import TracebackType
 from typing import Any
-from uuid import uuid4
 
 import httpx
 
@@ -106,11 +105,10 @@ class CascadqClient:
             QueueNotFoundError: Queue does not exist.
             BrokerFencedError: Broker is fenced (after retries).
         """
-        consumer_id = uuid4().hex
         resp = await self._request(
             "POST",
             f"/queues/{queue_name}/claim",
-            json={"consumer_id": consumer_id},
+            json={},
             expected_status=(200, 204),
         )
         if resp.status_code == 204:
@@ -122,7 +120,6 @@ class CascadqClient:
             task_id=data["task_id"],
             sequence=data["sequence"],
             payload=data["payload"],
-            consumer_id=consumer_id,
             _heartbeat_interval=self._config.heartbeat_interval_seconds,
         )
 
@@ -215,13 +212,11 @@ class ClaimedTask:
         task_id: str,
         sequence: int,
         payload: dict,
-        consumer_id: str,
         _heartbeat_interval: float,
     ) -> None:
         self.task_id = task_id
         self.sequence = sequence
         self.payload = payload
-        self.consumer_id = consumer_id
         self._client = _client
         self._queue_name = _queue_name
         self._heartbeat_interval = _heartbeat_interval

@@ -128,12 +128,12 @@ class QueueState:
         self._dirty = True
         return self._append_waiter()
 
-    def claim(self, consumer_id: str, now: float) -> tuple[Task, FlushWaiter]:
+    def claim(self, now: float) -> tuple[Task, FlushWaiter]:
         """Claim the pending task with the lowest sequence number."""
         task = self._pop_next_pending()
         if task is None:
             raise QueueEmptyError(f"no pending tasks in queue {self.name!r}")
-        claimed = task.claim(consumer_id, now)
+        claimed = task.claim(now)
         self._tasks[claimed.task_id] = claimed
         self._dirty = True
         return claimed, self._append_waiter()
