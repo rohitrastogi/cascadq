@@ -241,10 +241,14 @@ class QueueState:
                 (t.sequence for t in self._tasks.values()), default=0
             ) - 1
         for task in expired:
+            age = now - task.last_heartbeat if task.last_heartbeat else float("inf")
             logger.info(
-                "Heartbeat timeout for task %s in queue %s, re-queuing",
+                "Heartbeat timeout for task %s in queue %s "
+                "(last_heartbeat %.1fs ago, timeout=%.1fs), re-queuing",
                 task.task_id,
                 self.name,
+                age,
+                timeout_seconds,
             )
             if task.claim_idempotency_key:
                 self._claim_key_index.pop(task.claim_idempotency_key, None)

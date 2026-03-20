@@ -252,21 +252,33 @@ class ClaimedTask:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        await self._stop_heartbeat()
         if exc_type is None and not self._finished:
-            await self.finish()
+            try:
+                await self.finish()
+            except (TaskNotFoundError, TaskNotClaimedError):
+                logger.warning(
+                    "Task %s was re-queued before finish; "
+                    "another consumer will process it",
+                    self.task_id,
+                )
+        await self._stop_heartbeat()
 
     async def finish(self) -> None:
-        """Mark the task as completed."""
+        """Mark the task as completed.
+
+        Heartbeats continue running until the finish RPC is durably
+        acknowledged, so the broker does not re-queue the task while
+        the completion flush is in flight.
+        """
         if self._finished:
             return
-        await self._stop_heartbeat()
         await self._client._finish(
             self._queue_name,
             self.task_id,
             self.sequence,
         )
         self._finished = True
+        await self._stop_heartbeat()
 
     async def _stop_heartbeat(self) -> None:
         if self._heartbeat_task is not None:

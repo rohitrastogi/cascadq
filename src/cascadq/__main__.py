@@ -122,6 +122,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=_LOG_LEVELS[args.log_level])
+    # Silence noisy third-party loggers
+    for name in ("botocore", "aiobotocore", "urllib3"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     store: ObjectStore
     store_lifecycle: AbstractAsyncContextManager | None = None

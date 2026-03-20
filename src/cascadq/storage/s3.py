@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
@@ -76,17 +77,22 @@ class S3ObjectStore:
 
     async def read(self, key: str) -> tuple[bytes, VersionToken]:
         """Read an object, returning ``(data, etag)``."""
+        t0 = time.monotonic()
         try:
             response = await self._client.get_object(
                 Bucket=self._bucket, Key=key
             )
         except ClientError as exc:
+            elapsed = time.monotonic() - t0
+            logger.debug("S3 read %s failed in %.3fs: %s", key, elapsed, exc)
             if exc.response["Error"]["Code"] == "NoSuchKey":
                 raise KeyError(key) from exc
             raise
 
         async with response["Body"] as stream:
             data = await stream.read()
+        elapsed = time.monotonic() - t0
+        logger.debug("S3 read %s: %d bytes in %.3fs", key, len(data), elapsed)
         return data, _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
     async def write(
@@ -94,24 +100,34 @@ class S3ObjectStore:
     ) -> VersionToken:
         """Conditional write using ``If-Match``. Returns the new ETag."""
         etag_value = f'"{expected_version}"'
+        t0 = time.monotonic()
         try:
             response = await self._client.put_object(
                 Bucket=self._bucket, Key=key, Body=data, IfMatch=etag_value
             )
         except ClientError as exc:
+            elapsed = time.monotonic() - t0
+            logger.debug("S3 write %s failed in %.3fs: %s", key, elapsed, exc)
             _raise_on_precondition(exc, f"version mismatch for key={key!r}")
             raise
+        elapsed = time.monotonic() - t0
+        logger.debug("S3 write %s: %d bytes in %.3fs", key, len(data), elapsed)
         return _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
     async def write_new(self, key: str, data: bytes) -> VersionToken:
         """Write-if-not-exists using ``If-None-Match: *``. Returns the ETag."""
+        t0 = time.monotonic()
         try:
             response = await self._client.put_object(
                 Bucket=self._bucket, Key=key, Body=data, IfNoneMatch="*"
             )
         except ClientError as exc:
+            elapsed = time.monotonic() - t0
+            logger.debug("S3 write_new %s failed in %.3fs: %s", key, elapsed, exc)
             _raise_on_precondition(exc, f"key already exists: {key!r}")
             raise
+        elapsed = time.monotonic() - t0
+        logger.debug("S3 write_new %s: %d bytes in %.3fs", key, len(data), elapsed)
         return _strip_etag(response["ResponseMetadata"]["HTTPHeaders"]["etag"])
 
     async def delete(self, key: str) -> None:

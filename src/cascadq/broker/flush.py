@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from cascadq.broker import queue_key
 from cascadq.broker.queue_state import FlushWaiter, QueueState
@@ -108,12 +109,18 @@ class FlushCoordinator:
         all_waiters = [
             w for ws in waiters_by_queue.values() for w in ws
         ]
+        if all_waiters:
+            logger.debug(
+                "Flush batch: %d waiters, %d dirty queues",
+                len(all_waiters), len(jobs),
+            )
 
         if not jobs:
             for waiter in all_waiters:
                 waiter.set_result()
             return
 
+        t0 = time.monotonic()
         try:
             async with asyncio.TaskGroup() as tg:
                 results: dict[str, asyncio.Task[VersionToken]] = {}
@@ -127,6 +134,10 @@ class FlushCoordinator:
                 state.version = results[name].result()
                 state.mark_clean()
             self._consecutive_failures = 0
+            elapsed = time.monotonic() - t0
+            logger.debug(
+                "Flush OK: %d waiters in %.3fs", len(all_waiters), elapsed,
+            )
             for waiter in all_waiters:
                 waiter.set_result()
         except* ConflictError as eg:
