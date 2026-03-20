@@ -14,13 +14,13 @@ from cascadq.broker.broker import Broker
 from cascadq.client.client import CascadqClient
 from cascadq.config import BrokerConfig, ClientConfig
 from cascadq.server.app import create_app
-from cascadq.storage.memory import InMemoryObjectStore
+from tests.support import FaultInjectingStore
 
 
 @pytest.fixture
 async def stack(
-    memory_store: InMemoryObjectStore,
-) -> AsyncGenerator[tuple[CascadqClient, InMemoryObjectStore]]:
+    memory_store: FaultInjectingStore,
+) -> AsyncGenerator[tuple[CascadqClient, FaultInjectingStore]]:
     """Full stack with a short HTTP timeout and longer retry delay.
 
     The HTTP timeout (0.1s) is shorter than the injected store delay
@@ -59,7 +59,7 @@ async def stack(
 class TestPushIdempotency:
     async def test_push_idempotent_on_timeout(
         self,
-        stack: tuple[CascadqClient, InMemoryObjectStore],
+        stack: tuple[CascadqClient, FaultInjectingStore],
     ) -> None:
         """First push times out (store is slow), retry deduplicates."""
         client, store = stack
@@ -86,7 +86,7 @@ class TestPushIdempotency:
 class TestClaimIdempotency:
     async def test_claim_idempotent_on_timeout(
         self,
-        stack: tuple[CascadqClient, InMemoryObjectStore],
+        stack: tuple[CascadqClient, FaultInjectingStore],
     ) -> None:
         """First claim times out (store is slow), retry returns same task."""
         client, store = stack

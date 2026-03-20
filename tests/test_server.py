@@ -9,12 +9,12 @@ from httpx import ASGITransport, AsyncClient
 from cascadq.broker.broker import Broker
 from cascadq.config import BrokerConfig
 from cascadq.server.app import create_app
-from cascadq.storage.memory import InMemoryObjectStore
+from tests.support import FaultInjectingStore
 
 
 @pytest.fixture
 async def client(
-    memory_store: InMemoryObjectStore,
+    memory_store: FaultInjectingStore,
     test_config: BrokerConfig,
 ) -> AsyncGenerator[AsyncClient]:
     broker = Broker(store=memory_store, config=test_config)
@@ -135,7 +135,7 @@ class TestPayloadValidation:
 
 class TestStoreLifecycle:
     async def test_store_lifecycle_is_entered_and_exited(
-        self, memory_store: InMemoryObjectStore, test_config: BrokerConfig
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
         """The store_lifecycle context manager is managed by the app lifespan."""
         entered = False

@@ -1,4 +1,4 @@
-"""End-to-end integration tests: client → HTTP server → broker → InMemoryObjectStore."""
+"""End-to-end integration tests: client → HTTP server → broker → FaultInjectingStore."""
 
 import asyncio
 from collections.abc import AsyncGenerator
@@ -11,12 +11,12 @@ from cascadq.client.client import CascadqClient
 from cascadq.config import BrokerConfig, ClientConfig
 from cascadq.errors import BrokerFencedError, PayloadValidationError, QueueNotFoundError
 from cascadq.server.app import create_app
-from cascadq.storage.memory import InMemoryObjectStore
+from tests.support import FaultInjectingStore
 
 
 @pytest.fixture
 async def client(
-    memory_store: InMemoryObjectStore,
+    memory_store: FaultInjectingStore,
 ) -> AsyncGenerator[CascadqClient]:
     """Full stack: client → server → broker → memory store."""
     config = BrokerConfig(
@@ -104,7 +104,7 @@ class TestWorkerFailure:
 
 class TestBrokerFencing:
     async def test_fenced_broker_rejects_requests(
-        self, client: CascadqClient, memory_store: InMemoryObjectStore
+        self, client: CascadqClient, memory_store: FaultInjectingStore
     ) -> None:
         await client.create_queue("work")
 

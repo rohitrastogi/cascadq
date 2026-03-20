@@ -12,6 +12,7 @@ from cascadq.broker.broker import Broker
 from cascadq.errors import (
     BrokerFencedError,
     CascadqError,
+    FlushExhaustedError,
     PayloadValidationError,
     QueueAlreadyExistsError,
     QueueEmptyError,
@@ -36,6 +37,7 @@ _ERROR_MAP: dict[type[Exception], tuple[int, str]] = {
     TaskNotClaimedError: (409, "task_not_claimed"),
     PayloadValidationError: (422, "payload_validation_error"),
     BrokerFencedError: (503, "broker_fenced"),
+    FlushExhaustedError: (503, "flush_exhausted"),
 }
 
 

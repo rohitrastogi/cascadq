@@ -11,12 +11,12 @@ from cascadq.client.client import CascadqClient
 from cascadq.config import BrokerConfig, ClientConfig
 from cascadq.errors import QueueAlreadyExistsError, QueueNotFoundError
 from cascadq.server.app import create_app
-from cascadq.storage.memory import InMemoryObjectStore
+from tests.support import FaultInjectingStore
 
 
 @pytest.fixture
 async def server_client(
-    memory_store: InMemoryObjectStore,
+    memory_store: FaultInjectingStore,
     test_config: BrokerConfig,
 ) -> AsyncGenerator[tuple[CascadqClient, Broker]]:
     """Set up a full stack: client → HTTP server → broker → memory store."""
@@ -112,7 +112,7 @@ class TestDomainErrors:
             await client.create_queue("q")
 
     async def test_transient_flush_failure_retried_internally(
-        self, memory_store: InMemoryObjectStore,
+        self, memory_store: FaultInjectingStore,
     ) -> None:
         """A transient store error is retried by the broker internally;
         the client push succeeds without seeing a failure."""

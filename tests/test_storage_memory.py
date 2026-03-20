@@ -1,4 +1,4 @@
-"""Tests for InMemoryObjectStore CAS semantics."""
+"""Tests for InMemoryObjectStore CAS semantics and FaultInjectingStore injection."""
 
 import asyncio
 
@@ -7,10 +7,17 @@ import pytest
 from cascadq.errors import ConflictError
 from cascadq.storage.memory import InMemoryObjectStore
 
+from .support import FaultInjectingStore
+
 
 @pytest.fixture
 def store() -> InMemoryObjectStore:
     return InMemoryObjectStore()
+
+
+@pytest.fixture
+def test_store() -> FaultInjectingStore:
+    return FaultInjectingStore()
 
 
 class TestCASSemantics:
@@ -48,17 +55,6 @@ class TestCASSemantics:
         _, v2 = await store.read("k")
         assert v2 == v1 + 1
 
-    async def test_inject_conflict_fires_once(
-        self, store: InMemoryObjectStore
-    ) -> None:
-        await store.write_new("k", b"v1")
-        _, version = await store.read("k")
-        store.inject_conflict("k")
-        with pytest.raises(ConflictError, match="injected conflict"):
-            await store.write("k", b"v2", version)
-        # Conflict consumed — next write succeeds
-        await store.write("k", b"v2", version)
-
     async def test_list_prefix_filters_correctly(
         self, store: InMemoryObjectStore
     ) -> None:
@@ -69,28 +65,39 @@ class TestCASSemantics:
         assert sorted(keys) == ["queues/a.json", "queues/b.json"]
 
 
-class TestWriteDelay:
-    async def test_inject_write_delay_slows_write(
-        self, store: InMemoryObjectStore
+class TestFaultInjection:
+    async def test_inject_conflict_fires_once(
+        self, test_store: FaultInjectingStore
     ) -> None:
-        await store.write_new("k", b"v1")
-        _, version = await store.read("k")
-        store.inject_write_delay("k", 0.1)
+        await test_store.write_new("k", b"v1")
+        _, version = await test_store.read("k")
+        test_store.inject_conflict("k")
+        with pytest.raises(ConflictError, match="injected conflict"):
+            await test_store.write("k", b"v2", version)
+        # Conflict consumed — next write succeeds
+        await test_store.write("k", b"v2", version)
+
+    async def test_inject_write_delay_slows_write(
+        self, test_store: FaultInjectingStore
+    ) -> None:
+        await test_store.write_new("k", b"v1")
+        _, version = await test_store.read("k")
+        test_store.inject_write_delay("k", 0.1)
         t0 = asyncio.get_running_loop().time()
-        await store.write("k", b"v2", version)
+        await test_store.write("k", b"v2", version)
         elapsed = asyncio.get_running_loop().time() - t0
         assert elapsed >= 0.09
 
     async def test_inject_write_delay_consumed_once(
-        self, store: InMemoryObjectStore
+        self, test_store: FaultInjectingStore
     ) -> None:
-        await store.write_new("k", b"v1")
-        _, v1 = await store.read("k")
-        store.inject_write_delay("k", 0.1)
-        await store.write("k", b"v2", v1)
-        _, v2 = await store.read("k")
+        await test_store.write_new("k", b"v1")
+        _, v1 = await test_store.read("k")
+        test_store.inject_write_delay("k", 0.1)
+        await test_store.write("k", b"v2", v1)
+        _, v2 = await test_store.read("k")
         # Second write should not be delayed
         t0 = asyncio.get_running_loop().time()
-        await store.write("k", b"v3", v2)
+        await test_store.write("k", b"v3", v2)
         elapsed = asyncio.get_running_loop().time() - t0
         assert elapsed < 0.05

@@ -33,8 +33,13 @@ class BrokerFencedError(CascadqError):
     """This broker has been fenced out by another broker's CAS write."""
 
 
-class FlushFailedError(CascadqError):
-    """Reserved. Transient flush failures are now retried internally."""
+class FlushExhaustedError(CascadqError):
+    """Flush retries exhausted — broker cannot persist in-memory state.
+
+    Unlike BrokerFencedError, this does not mean another broker took
+    over.  The broker's in-memory state may be valid but cannot be
+    written to storage.  Recovery requires a restart from durable state.
+    """
 
 
 class PayloadValidationError(CascadqError):

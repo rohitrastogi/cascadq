@@ -6,15 +6,15 @@ import pytest
 
 from cascadq.broker.flush import FlushCoordinator
 from cascadq.broker.queue_state import QueueState
-from cascadq.errors import BrokerFencedError
+from cascadq.errors import BrokerFencedError, FlushExhaustedError
 from cascadq.models import QueueFile, QueueMetadata, serialize_queue_file
-from cascadq.storage.memory import InMemoryObjectStore
+from tests.support import FaultInjectingStore
 
 from .conftest import make_idempotency_key as _key
 
 
 async def _setup_coordinator(
-    store: InMemoryObjectStore,
+    store: FaultInjectingStore,
     queue_names: list[str] | None = None,
     max_consecutive_failures: int = 3,
     retry_delay_seconds: float = 1.0,
@@ -44,7 +44,7 @@ async def _setup_coordinator(
 
 class TestFlushCoordinator:
     async def test_flush_cycle_resolves_waiter(
-        self, memory_store: InMemoryObjectStore
+        self, memory_store: FaultInjectingStore
     ) -> None:
         coord, states = await _setup_coordinator(memory_store)
 
@@ -58,7 +58,7 @@ class TestFlushCoordinator:
         await coord.stop()
 
     async def test_cas_conflict_fences_all_queues(
-        self, memory_store: InMemoryObjectStore
+        self, memory_store: FaultInjectingStore
     ) -> None:
         coord, states = await _setup_coordinator(memory_store, ["a", "b"])
 
@@ -78,7 +78,7 @@ class TestFlushCoordinator:
         await coord.stop()
 
     async def test_transient_failure_retries_and_succeeds(
-        self, memory_store: InMemoryObjectStore
+        self, memory_store: FaultInjectingStore
     ) -> None:
         """A single transient failure keeps waiters pending; the next
         flush cycle succeeds and resolves them."""
@@ -101,10 +101,10 @@ class TestFlushCoordinator:
         assert b"t1" in data
         await coord.stop()
 
-    async def test_transient_exhaustion_fences_broker(
-        self, memory_store: InMemoryObjectStore
+    async def test_transient_exhaustion_raises_flush_exhausted(
+        self, memory_store: FaultInjectingStore
     ) -> None:
-        """Exhausting transient retries fences the broker."""
+        """Exhausting transient retries raises FlushExhaustedError, not fenced."""
         coord, states = await _setup_coordinator(
             memory_store,
             max_consecutive_failures=2,
@@ -116,13 +116,13 @@ class TestFlushCoordinator:
         coord.start()
         coord.notify()
 
-        with pytest.raises(BrokerFencedError):
+        with pytest.raises(FlushExhaustedError):
             await asyncio.wait_for(waiter.wait(), timeout=5.0)
         assert coord.is_fenced
         await coord.stop()
 
     async def test_double_buffering_across_flushes(
-        self, memory_store: InMemoryObjectStore
+        self, memory_store: FaultInjectingStore
     ) -> None:
         """Consecutive pushes are flushed in separate batches."""
         coord, states = await _setup_coordinator(memory_store)

@@ -8,7 +8,8 @@ import pytest
 
 from cascadq.config import BrokerConfig
 from cascadq.models import QueueFile, QueueMetadata
-from cascadq.storage.memory import InMemoryObjectStore
+
+from .support import FaultInjectingStore
 
 
 def make_idempotency_key() -> str:
@@ -17,8 +18,8 @@ def make_idempotency_key() -> str:
 
 
 @pytest.fixture
-def memory_store() -> InMemoryObjectStore:
-    return InMemoryObjectStore()
+def memory_store() -> FaultInjectingStore:
+    return FaultInjectingStore()
 
 
 @pytest.fixture

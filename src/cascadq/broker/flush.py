@@ -7,7 +7,12 @@ import logging
 
 from cascadq.broker import queue_key
 from cascadq.broker.queue_state import FlushWaiter, QueueState
-from cascadq.errors import BrokerFencedError, ConflictError
+from cascadq.errors import (
+    BrokerFencedError,
+    CascadqError,
+    ConflictError,
+    FlushExhaustedError,
+)
 from cascadq.models import serialize_queue_file
 from cascadq.storage.protocol import ObjectStore, VersionToken
 
@@ -41,12 +46,18 @@ class FlushCoordinator:
         self._retry_delay = retry_delay_seconds
         self._consecutive_failures = 0
         self._fenced = False
+        self._shutdown_error: CascadqError | None = None
         self._task: asyncio.Task[None] | None = None
         self._flush_event = asyncio.Event()
 
     @property
     def is_fenced(self) -> bool:
         return self._fenced
+
+    @property
+    def shutdown_error(self) -> CascadqError | None:
+        """The error that caused the broker to stop, or None if healthy."""
+        return self._shutdown_error
 
     def notify(self) -> None:
         """Signal that there's dirty data to flush."""
@@ -123,7 +134,10 @@ class FlushCoordinator:
                 "CAS conflict detected — broker is fenced: %s",
                 eg.exceptions[0],
             )
-            self._fence(all_waiters)
+            self._fence(
+                BrokerFencedError("broker has been fenced by another instance"),
+                all_waiters,
+            )
         except* Exception as eg:
             self._consecutive_failures += 1
             logger.warning(
@@ -134,9 +148,14 @@ class FlushCoordinator:
             )
             if self._consecutive_failures >= self._max_consecutive_failures:
                 logger.error(
-                    "Max consecutive flush failures reached, fencing broker"
+                    "Max consecutive flush failures reached — broker stopping"
                 )
-                self._fence(all_waiters)
+                self._fence(
+                    FlushExhaustedError(
+                        "flush retries exhausted, broker cannot persist state"
+                    ),
+                    all_waiters,
+                )
             else:
                 # Keep waiters pending — put them back so the next
                 # flush cycle re-collects and re-snapshots them.
@@ -145,10 +164,12 @@ class FlushCoordinator:
                 await asyncio.sleep(self._retry_delay)
                 self._flush_event.set()
 
-    def _fence(self, in_flight_waiters: list[FlushWaiter]) -> None:
-        """Enter fenced state: fail all in-flight and buffered waiters."""
+    def _fence(
+        self, error: CascadqError, in_flight_waiters: list[FlushWaiter],
+    ) -> None:
+        """Enter terminal state: fail all in-flight and buffered waiters."""
         self._fenced = True
-        error = BrokerFencedError("broker has been fenced by another instance")
+        self._shutdown_error = error
         for waiter in in_flight_waiters:
             waiter.set_error(error)
         # Also drain any waiters that accumulated during the flush
