@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from enum import StrEnum
 
 from cascadq import metrics
@@ -28,19 +27,6 @@ from cascadq.models import (
 from cascadq.storage.protocol import ObjectStore
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class FlusherClaimResult:
-    """Result of a flusher-level claim, including the FlushBuffer waiter.
-
-    Temporary bridge type: eliminated when claim_and_deliver replaces
-    the broker's claim-then-wait-then-confirm flow.
-    """
-
-    task: Task
-    mutated: bool
-    waiter: FlushWaiter
 
 
 class FlusherStatus(StrEnum):
@@ -158,13 +144,10 @@ class QueueFlusher:
         self._notify()
         return waiter
 
-    def claim(self, now: float, idempotency_key: str) -> FlusherClaimResult:
-        """Claim the next pending task and schedule a flush.
-
-        The lease timestamp is set immediately so it's durable in the
-        same flush.  The task is pending delivery until
-        ``confirm_delivery`` is called.
-        """
+    async def claim_and_deliver(
+        self, now: float, idempotency_key: str,
+    ) -> Task:
+        """Claim a task, wait for flush, then confirm delivery."""
         result = self._state.claim(now, idempotency_key)
         if result.mutated:
             waiter = self._buffer.record_mutation()
@@ -177,7 +160,9 @@ class QueueFlusher:
         else:
             waiter = self._buffer.record_waiter()
         self._notify()
-        return FlusherClaimResult(result.task, result.mutated, waiter)
+        await waiter.wait()
+        self._state.confirm_delivery(result.task.task_id)
+        return result.task
 
     def heartbeat(self, task_id: str, now: float) -> None:
         """Renew the heartbeat lease (fire-and-forget, no waiter)."""
@@ -205,10 +190,6 @@ class QueueFlusher:
             ).inc(removed)
             self._buffer.mark_dirty()
             self._notify()
-
-    def confirm_delivery(self, task_id: str) -> None:
-        """Mark a claim as delivered — makes it timeout-eligible."""
-        self._state.confirm_delivery(task_id)
 
     def ensure_healthy(self) -> None:
         """Raise if the queue is not in healthy state."""

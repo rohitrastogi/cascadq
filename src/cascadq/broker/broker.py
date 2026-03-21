@@ -180,10 +180,7 @@ class Broker:
         while True:
             now = self._clock()
             try:
-                result = flusher.claim(now, idempotency_key)
-                await result.waiter.wait()
-                flusher.confirm_delivery(result.task.task_id)
-                return result.task
+                return await flusher.claim_and_deliver(now, idempotency_key)
             except QueueEmptyError as empty:
                 remaining = None
                 if deadline is not None:
