@@ -292,6 +292,13 @@ class ClaimedTask:
             return
         self._finishing = True
         try:
+            # Refresh the lease immediately before finish so a worker that
+            # has been CPU- or transport-starved does not lose the task in
+            # the narrow window before the finish RPC gets out.
+            await self._client._heartbeat(
+                self._queue_name,
+                self.task_id,
+            )
             if _TRACE_TASK_LIFECYCLE:
                 logger.info(
                     "task_trace finish_start task_id=%s queue=%s sequence=%s",

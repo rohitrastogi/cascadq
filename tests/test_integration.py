@@ -307,6 +307,47 @@ class TestSlowFlushResilience:
         result = await client.claim("q", timeout_seconds=0)
         assert result is None
 
+    async def test_pre_finish_heartbeat_keeps_task_alive_when_loop_is_slow(
+        self, memory_store: FaultInjectingStore,
+    ) -> None:
+        """finish() should refresh the lease even if the background heartbeat
+        interval is longer than the broker timeout."""
+        config = BrokerConfig(
+            heartbeat_timeout_seconds=0.3,
+            heartbeat_check_interval_seconds=0.1,
+            compaction_interval_seconds=100.0,
+        )
+        broker = Broker(store=memory_store, config=config)
+        await broker.start()
+        app = create_app(store=memory_store, config=config, broker=broker)
+        app.state.broker = broker
+        transport = ASGITransport(app=app)
+        http_client = AsyncClient(transport=transport, base_url="http://test")
+        client_config = ClientConfig(
+            base_url="http://test",
+            heartbeat_interval_seconds=1.0,
+            max_retries=2,
+            retry_base_delay_seconds=0.01,
+        )
+        client = CascadqClient(config=client_config, http_client=http_client)
+
+        try:
+            await client.create_queue("q")
+            await client.push("q", {"x": 1})
+
+            claimed = await client.claim("q")
+            assert claimed is not None
+
+            async with claimed:
+                await asyncio.sleep(0.2)
+                memory_store.inject_write_delay("queues/q.json", 0.5)
+
+            result = await client.claim("q", timeout_seconds=0)
+            assert result is None
+        finally:
+            await client.close()
+            await broker.stop()
+
     async def test_heartbeat_loop_exits_cleanly_after_finish(
         self, slow_flush_client: tuple[CascadqClient, FaultInjectingStore],
     ) -> None:
