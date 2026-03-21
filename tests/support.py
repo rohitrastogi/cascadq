@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 
 from cascadq.errors import ConflictError
 from cascadq.storage.memory import InMemoryObjectStore
 from cascadq.storage.protocol import VersionToken
+
+
+def find_free_port() -> int:
+    """Bind to an ephemeral port and return its number."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 class FaultInjectingStore(InMemoryObjectStore):

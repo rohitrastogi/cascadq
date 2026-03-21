@@ -62,4 +62,8 @@ def create_app(
         ],
         lifespan=lifespan,
     )
+    # Eagerly set broker so tests using ASGITransport (which skips
+    # the lifespan) don't need to set app.state.broker manually.
+    if not owns_broker:
+        app.state.broker = broker
     return app

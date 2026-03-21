@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from enum import StrEnum
 
 from cascadq import metrics
 from cascadq.broker import queue_key
@@ -19,20 +18,14 @@ from cascadq.errors import (
     FlushExhaustedError,
 )
 from cascadq.models import (
+    FlusherStatus,
     Task,
-    TaskStatus,
     deserialize_snapshot,
     serialize_snapshot,
 )
 from cascadq.storage.protocol import ObjectStore
 
 logger = logging.getLogger(__name__)
-
-
-class FlusherStatus(StrEnum):
-    healthy = "healthy"
-    recovering = "recovering"
-    fenced = "fenced"
 
 
 class Flusher:
@@ -412,14 +405,7 @@ class Flusher:
         self._flush_event.clear()
         self.start()
         # Reset gauges from the reloaded state
-        pending = sum(
-            1 for t in queue_file.tasks if t.status == TaskStatus.pending
-        )
-        claimed = sum(
-            1 for t in queue_file.tasks if t.status == TaskStatus.claimed
-        )
-        metrics.queue_pending_tasks.labels(queue=name).set(pending)
-        metrics.queue_claimed_tasks.labels(queue=name).set(claimed)
+        metrics.reset_queue_gauges(name, queue_file)
         metrics.set_queue_status(name, self._status)
         metrics.recovery_events_total.labels(queue=name, outcome="succeeded").inc()
         logger.info("Queue %s recovered from flush exhaustion", name)

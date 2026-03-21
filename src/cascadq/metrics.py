@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter as PyCounter
+
 from prometheus_client import Counter, Gauge, Histogram
+
+from cascadq.models import FlusherStatus, Snapshot, TaskStatus
 
 # -- Flush (Tier 1) ----------------------------------------------------------
 
@@ -104,6 +108,13 @@ compaction_tasks_removed_total = Counter(
 _STATUS_VALUES = {"healthy": 1, "recovering": 2, "fenced": 3}
 
 
-def set_queue_status(queue: str, status: str) -> None:
+def set_queue_status(queue: str, status: FlusherStatus) -> None:
     """Update the queue status gauge from a FlusherStatus value."""
     queue_status.labels(queue=queue).set(_STATUS_VALUES.get(status, 0))
+
+
+def reset_queue_gauges(queue: str, snapshot: Snapshot) -> None:
+    """Set pending/claimed gauges from a snapshot (single pass)."""
+    counts: PyCounter[TaskStatus] = PyCounter(t.status for t in snapshot.tasks)
+    queue_pending_tasks.labels(queue=queue).set(counts[TaskStatus.pending])
+    queue_claimed_tasks.labels(queue=queue).set(counts[TaskStatus.claimed])

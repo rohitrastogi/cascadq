@@ -47,11 +47,12 @@ _ERROR_MAP: dict[type[Exception], tuple[int, str]] = {
 
 
 def _error_response(exc: Exception) -> Response:
-    for cls, (status, code) in _ERROR_MAP.items():
-        if isinstance(exc, cls):
-            return JSONResponse(
-                {"error": str(exc), "code": code}, status_code=status
-            )
+    entry = _ERROR_MAP.get(type(exc))
+    if entry is not None:
+        status, code = entry
+        return JSONResponse(
+            {"error": str(exc), "code": code}, status_code=status
+        )
     return JSONResponse(
         {"error": str(exc), "code": "internal_error"}, status_code=500
     )
@@ -65,7 +66,7 @@ def healthz(request: Request) -> Response:
 def readyz(request: Request) -> Response:
     """Readiness probe — returns 200 when the broker can serve traffic."""
     broker: Broker | None = getattr(request.app.state, "broker", None)
-    if broker is None:
+    if broker is None or not broker.is_started:
         return JSONResponse(
             {"error": "broker not started", "code": "not_ready"},
             status_code=503,
