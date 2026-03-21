@@ -32,5 +32,8 @@ class ScenarioConfig:
     compaction_interval_seconds: float = 100.0
     processing_delay_seconds: float = 0.0
     processing_jitter_seconds: float = 0.0
+    payload_bytes: int = 0
+    compress_snapshots: bool = False
     claim_timeout_seconds: float = 10.0
     abandon_backoff_seconds: float = 0.25
+    abandon_claim_limit: int | None = None

@@ -13,7 +13,8 @@ import pytest
 
 from cascadq.client.client import CascadqClient
 from cascadq.config import ClientConfig
-from cascadq.models import TaskStatus, deserialize_queue_file
+from cascadq.models import TaskStatus
+from cascadq.queue_codec import decode_queue_file
 
 from .config import ConsumerBehavior, QueueSpec, ScenarioConfig
 from .events import EventKind, EventRecorder
@@ -75,7 +76,7 @@ async def _wait_for_compaction(
     completed: list[object] = []
     while True:
         data, _ = await store.read(key)
-        queue_file = deserialize_queue_file(data)
+        queue_file = decode_queue_file(data)
         completed = [
             task for task in queue_file.tasks
             if task.status == TaskStatus.completed
@@ -135,6 +136,26 @@ class TestThroughputModerate:
         await _run_standard_scenario(scenario, tmp_path)
 
 
+class TestLargePayloads:
+    """4 producers, 4 consumers, 300 tasks, 64KiB payload blob."""
+
+    async def test_large_payloads(self, r2_env: dict, tmp_path: Path) -> None:
+        scenario = ScenarioConfig(
+            name="large-payloads",
+            queues=(
+                QueueSpec(
+                    name="work",
+                    producer_count=4,
+                    consumer_count=4,
+                    task_count=300,
+                ),
+            ),
+            payload_bytes=64 * 1024,
+            compress_snapshots=True,
+        )
+        await _run_standard_scenario(scenario, tmp_path)
+
+
 class TestHighContention:
     """16 producers, 16 consumers, 2000 tasks, 1 queue, jitter."""
 
@@ -180,6 +201,8 @@ class TestHeartbeatTimeout:
             heartbeat_timeout_seconds=1.0,
             heartbeat_check_interval_seconds=0.3,
             heartbeat_interval_seconds=0.2,
+            abandon_backoff_seconds=1.0,
+            abandon_claim_limit=20,
         )
         await _run_standard_scenario(scenario, tmp_path, check_fifo=False)
 

@@ -17,11 +17,8 @@ from cascadq.errors import (
     ConflictError,
     FlushExhaustedError,
 )
-from cascadq.models import (
-    TaskStatus,
-    deserialize_queue_file,
-    serialize_queue_file,
-)
+from cascadq.models import TaskStatus
+from cascadq.queue_codec import decode_queue_file, encode_queue_file
 from cascadq.storage.protocol import ObjectStore
 
 logger = logging.getLogger(__name__)
@@ -58,6 +55,7 @@ class QueueFlusher:
         retry_delay_seconds: float = 1.0,
         recovery_interval_seconds: float = 5.0,
         idempotency_ttl_seconds: float = 300.0,
+        compress_snapshots: bool = False,
     ) -> None:
         self._store = store
         self._prefix = prefix
@@ -66,6 +64,7 @@ class QueueFlusher:
         self._retry_delay = retry_delay_seconds
         self._recovery_interval = recovery_interval_seconds
         self._idempotency_ttl = idempotency_ttl_seconds
+        self._compress_snapshots = compress_snapshots
         self._consecutive_failures = 0
         self._status = FlusherStatus.healthy
         self._shutdown_error: CascadqError | None = None
@@ -239,7 +238,10 @@ class QueueFlusher:
 
         generation = self._state.generation
         version = self._state.version
-        data = serialize_queue_file(self._state.snapshot())
+        data = encode_queue_file(
+            self._state.snapshot(),
+            compress=self._compress_snapshots,
+        )
 
         key = queue_key(self._prefix, self._state.name)
         name = self._state.name
@@ -394,7 +396,7 @@ class QueueFlusher:
                 [],
             )
             return
-        queue_file = deserialize_queue_file(data)
+        queue_file = decode_queue_file(data)
         new_state = QueueState(
             name=name,
             queue_file=queue_file,

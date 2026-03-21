@@ -94,6 +94,46 @@ class TestClaimedTaskHeartbeat:
             # Double finish should be idempotent
             await claimed.finish()
 
+    async def test_finish_acknowledged_is_false_when_task_times_out(
+        self,
+        memory_store: FaultInjectingStore,
+    ) -> None:
+        """A re-queued task must not be reported as finished."""
+        config = BrokerConfig(
+            heartbeat_timeout_seconds=0.1,
+            heartbeat_check_interval_seconds=0.05,
+            compaction_interval_seconds=100.0,
+        )
+        broker = Broker(store=memory_store, config=config)
+        await broker.start()
+        app = create_app(store=memory_store, config=config, broker=broker)
+        app.state.broker = broker
+        transport = ASGITransport(app=app)
+        http_client = AsyncClient(transport=transport, base_url="http://test")
+        client_config = ClientConfig(
+            base_url="http://test",
+            heartbeat_interval_seconds=1.0,
+            max_retries=2,
+            retry_base_delay_seconds=0.01,
+        )
+        client = CascadqClient(config=client_config, http_client=http_client)
+
+        try:
+            await client.create_queue("q")
+            await client.push("q", {"x": 1})
+            claimed = await client.claim("q")
+            assert claimed is not None
+
+            async with claimed:
+                await asyncio.sleep(0.2)
+
+            assert claimed.finish_acknowledged is False
+            retried = await client.claim("q", timeout_seconds=0)
+            assert retried is not None
+        finally:
+            await client.close()
+            await broker.stop()
+
 
 class TestDomainErrors:
     async def test_push_to_nonexistent_queue_raises_queue_not_found(

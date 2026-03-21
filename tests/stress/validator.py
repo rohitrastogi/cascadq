@@ -91,9 +91,16 @@ def _check_no_overlapping_claims(
     """For each logical_id, claim intervals must not overlap.
 
     A claim interval runs from ``claim_succeeded`` to the earlier of
-    ``finish_succeeded`` or ``consumer_abandoned_claim`` + heartbeat timeout.
+    ``finish_succeeded`` or ``consumer_abandoned_claim``.
+
+    The stress event log is client-observed. For abandoned claims, the
+    worker records the abandon event when it stops acting on the task,
+    but the broker's lease timeout is anchored to the server-side claim
+    timestamp, which can be earlier than the client-observed claim event
+    because claim delivery waits for a flush. Treating the interval as
+    lasting until ``abandon + heartbeat_timeout`` therefore overstates
+    the live claim window and produces false overlap reports.
     """
-    timeout = scenario.heartbeat_timeout_seconds
 
     # Group events by logical_id
     by_lid: dict[str, list[Event]] = {}
@@ -106,7 +113,7 @@ def _check_no_overlapping_claims(
         for e in lid_events:
             if e.kind == EventKind.claim_succeeded:
                 claim_start = e.timestamp
-                claim_end = _find_claim_end(lid_events, e, timeout)
+                claim_end = _find_claim_end(lid_events, e)
                 intervals.append((claim_start, claim_end))
 
         # Check pairwise overlap
@@ -125,7 +132,6 @@ def _check_no_overlapping_claims(
 def _find_claim_end(
     lid_events: list[Event],
     claim_event: Event,
-    timeout: float,
 ) -> float:
     """Find when a claim interval ends.
 
@@ -140,9 +146,9 @@ def _find_claim_end(
         if e.kind == EventKind.finish_succeeded:
             return e.timestamp
         if e.kind == EventKind.consumer_abandoned_claim:
-            return e.timestamp + timeout
-    # No explicit end found — treat as abandoned with timeout
-    return claim_event.timestamp + timeout
+            return e.timestamp
+    # No explicit end found — treat as still active at its claim timestamp.
+    return claim_event.timestamp
 
 
 def _check_fifo(

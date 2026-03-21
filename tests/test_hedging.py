@@ -100,3 +100,33 @@ class TestHedgedWrite:
 
         with pytest.raises(OSError, match="injected transient error"):
             await hedged_write(store.write, "k", b"v2", 1, hedge_after=0.05)
+
+    async def test_conflict_plus_transport_error_raises_transport_error(
+        self,
+    ) -> None:
+        """A self-conflict paired with a transport error is ambiguous.
+
+        That should not be surfaced as a real CAS conflict, because
+        fencing the queue would be worse than treating the write as
+        transiently failed.
+        """
+        store = FaultInjectingStore()
+        await store.write_new("k", b"v1")
+
+        call_count = 0
+
+        async def conflict_then_error(
+            key: str, data: bytes, version: VersionToken,
+        ) -> VersionToken:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                await asyncio.sleep(0.2)
+                return await store.write(key, data, version)
+            await store.write(key, data, version)
+            raise OSError("connection lost after write")
+
+        with pytest.raises(OSError, match="connection lost after write"):
+            await hedged_write(
+                conflict_then_error, "k", b"v2", 1, hedge_after=0.05,
+            )

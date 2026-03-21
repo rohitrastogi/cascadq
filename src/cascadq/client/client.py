@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from types import TracebackType
 from typing import Any
@@ -24,6 +25,8 @@ from cascadq.errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TRACE_TASK_LIFECYCLE = os.environ.get("CASCADQ_TRACE_TASK_LIFECYCLE") == "1"
 
 
 class CascadqClient:
@@ -243,7 +246,19 @@ class ClaimedTask:
         self._finishing = False
         self._finished = False
 
+    @property
+    def finish_acknowledged(self) -> bool:
+        """Whether the broker durably acknowledged task completion."""
+        return self._finished
+
     async def __aenter__(self) -> ClaimedTask:
+        if _TRACE_TASK_LIFECYCLE:
+            logger.info(
+                "task_trace enter task_id=%s queue=%s heartbeat_interval=%.3fs",
+                self.task_id,
+                self._queue_name,
+                self._heartbeat_interval,
+            )
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         return self
 
@@ -277,12 +292,25 @@ class ClaimedTask:
             return
         self._finishing = True
         try:
+            if _TRACE_TASK_LIFECYCLE:
+                logger.info(
+                    "task_trace finish_start task_id=%s queue=%s sequence=%s",
+                    self.task_id,
+                    self._queue_name,
+                    self.sequence,
+                )
             await self._client._finish(
                 self._queue_name,
                 self.task_id,
                 self.sequence,
             )
             self._finished = True
+            if _TRACE_TASK_LIFECYCLE:
+                logger.info(
+                    "task_trace finish_done task_id=%s queue=%s",
+                    self.task_id,
+                    self._queue_name,
+                )
         finally:
             self._finishing = False
             await self._stop_heartbeat()
@@ -300,10 +328,28 @@ class ClaimedTask:
         while True:
             await asyncio.sleep(self._heartbeat_interval)
             try:
+                if _TRACE_TASK_LIFECYCLE:
+                    logger.info(
+                        "task_trace heartbeat_send task_id=%s queue=%s",
+                        self.task_id,
+                        self._queue_name,
+                    )
                 await self._client._heartbeat(self._queue_name, self.task_id)
+                if _TRACE_TASK_LIFECYCLE:
+                    logger.info(
+                        "task_trace heartbeat_ack task_id=%s queue=%s",
+                        self.task_id,
+                        self._queue_name,
+                    )
             except TaskNotClaimedError:
                 if self._finished or self._finishing:
                     return
+                if _TRACE_TASK_LIFECYCLE:
+                    logger.info(
+                        "task_trace heartbeat_not_claimed task_id=%s queue=%s",
+                        self.task_id,
+                        self._queue_name,
+                    )
                 logger.warning(
                     "Heartbeat rejected for task %s, stopping heartbeat",
                     self.task_id,
@@ -312,12 +358,25 @@ class ClaimedTask:
             except TaskNotFoundError:
                 if self._finished or self._finishing:
                     return
+                if _TRACE_TASK_LIFECYCLE:
+                    logger.info(
+                        "task_trace heartbeat_not_found task_id=%s queue=%s",
+                        self.task_id,
+                        self._queue_name,
+                    )
                 logger.warning(
                     "Task %s not found during heartbeat, stopping heartbeat",
                     self.task_id,
                 )
                 return
             except (httpx.HTTPError, CascadqError):
+                if _TRACE_TASK_LIFECYCLE:
+                    logger.info(
+                        "task_trace heartbeat_error task_id=%s queue=%s",
+                        self.task_id,
+                        self._queue_name,
+                        exc_info=True,
+                    )
                 logger.warning(
                     "Heartbeat failed for task %s", self.task_id,
                     exc_info=True,

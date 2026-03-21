@@ -43,6 +43,7 @@ class BrokerTuningConfig(BaseModel, frozen=True, extra="forbid"):
     heartbeat_timeout_seconds: float = 30.0
     heartbeat_check_interval_seconds: float = 5.0
     compaction_interval_seconds: float = 60.0
+    compress_snapshots: bool = False
     max_consecutive_flush_failures: int = 3
     flush_retry_delay_seconds: float = 1.0
     flush_recovery_interval_seconds: float = 5.0
@@ -92,6 +93,7 @@ class BrokerConfig:
     heartbeat_timeout_seconds: float = 30.0
     heartbeat_check_interval_seconds: float = 5.0
     compaction_interval_seconds: float = 60.0
+    compress_snapshots: bool = False
     max_consecutive_flush_failures: int = 3
     flush_retry_delay_seconds: float = 1.0
     flush_recovery_interval_seconds: float = 5.0

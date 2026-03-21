@@ -116,6 +116,7 @@ def _write_server_config(
                 scenario.heartbeat_check_interval_seconds
             ),
             "compaction_interval_seconds": scenario.compaction_interval_seconds,
+            "compress_snapshots": scenario.compress_snapshots,
         },
     }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -49,6 +50,7 @@ def run_workers(
                 "event_file": str(event_path),
                 "worker_id": wid,
                 "heartbeat_interval": scenario.heartbeat_interval_seconds,
+                "payload_bytes": scenario.payload_bytes,
             }
             processes.append((_spawn_worker(config, tmpdir), wid))
 
@@ -70,6 +72,7 @@ def run_workers(
                 "heartbeat_interval": scenario.heartbeat_interval_seconds,
                 "claim_timeout_seconds": claim_timeout,
                 "abandon_backoff_seconds": scenario.abandon_backoff_seconds,
+                "abandon_claim_limit": scenario.abandon_claim_limit,
             }
             processes.append((_spawn_worker(config, tmpdir), wid))
 
@@ -112,10 +115,12 @@ def _spawn_worker(
     logger.info("Spawning %s", worker_id)
     stderr_path = tmpdir / f"{worker_id}.stderr.log"
     stderr_file = open(stderr_path, "w")  # noqa: SIM115
+    env = dict(**os.environ, CASCADQ_TRACE_TASK_LIFECYCLE="1")
     return subprocess.Popen(
         [sys.executable, _WORKER_SCRIPT, str(config_path)],
         stdout=subprocess.DEVNULL,
         stderr=stderr_file,
+        env=env,
     )
 
 
@@ -154,4 +159,3 @@ def _resolve_behaviors(qs: QueueSpec) -> list[str]:
         else:
             behaviors.append(ConsumerBehavior.normal.value)
     return behaviors
-

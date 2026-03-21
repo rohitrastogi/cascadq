@@ -25,9 +25,8 @@ from cascadq.models import (
     QueueMetadata,
     Task,
     TaskStatus,
-    deserialize_queue_file,
-    serialize_queue_file,
 )
+from cascadq.queue_codec import decode_queue_file, encode_queue_file
 from cascadq.storage.protocol import ObjectStore
 
 logger = logging.getLogger(__name__)
@@ -67,7 +66,7 @@ class Broker:
                 ".json"
             )
             data, version = await self._store.read(key)
-            qf = deserialize_queue_file(data)
+            qf = decode_queue_file(data)
             state = QueueState(
                 name=name, queue_file=qf, version=version,
                 idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
@@ -123,6 +122,7 @@ class Broker:
             retry_delay_seconds=self._config.flush_retry_delay_seconds,
             recovery_interval_seconds=self._config.flush_recovery_interval_seconds,
             idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
+            compress_snapshots=self._config.compress_snapshots,
         )
 
     async def create_queue(
@@ -137,7 +137,12 @@ class Broker:
         )
         key = queue_key(self._prefix, name)
         try:
-            version = await self._store.write_new(key, serialize_queue_file(qf))
+            version = await self._store.write_new(
+                key,
+                encode_queue_file(
+                    qf, compress=self._config.compress_snapshots,
+                ),
+            )
         except ConflictError as e:
             raise QueueAlreadyExistsError(
                 f"queue {name!r} already exists"

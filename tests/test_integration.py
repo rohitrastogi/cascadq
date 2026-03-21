@@ -1,9 +1,12 @@
 """End-to-end integration tests: client → HTTP server → broker → FaultInjectingStore."""
 
 import asyncio
+import socket
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 
 import pytest
+import uvicorn
 from httpx import ASGITransport, AsyncClient
 
 from cascadq.broker.broker import Broker
@@ -328,6 +331,151 @@ class TestSlowFlushResilience:
         # If the loop didn't exit cleanly, the heartbeat task
         # would still be running.  Verify it stopped.
         assert claimed._heartbeat_task is None
+
+    @pytest.fixture
+    async def loopback_slow_flush_client(
+        self, memory_store: FaultInjectingStore,
+    ) -> AsyncGenerator[tuple[CascadqClient, FaultInjectingStore]]:
+        """Run the stack over a real loopback TCP server.
+
+        This keeps the same broker/store behavior as the ASGITransport
+        tests, but exercises the client heartbeat loop through uvicorn
+        and the real httpx transport stack.
+        """
+        config = BrokerConfig(
+            heartbeat_timeout_seconds=0.3,
+            heartbeat_check_interval_seconds=0.1,
+            compaction_interval_seconds=100.0,
+        )
+        broker = Broker(store=memory_store, config=config)
+        await broker.start()
+        app = create_app(store=memory_store, config=config, broker=broker)
+        app.state.broker = broker
+
+        port = _find_free_port()
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                log_level="warning",
+                lifespan="off",
+            )
+        )
+        server_task = asyncio.create_task(server.serve())
+        await _wait_for_loopback_server(port)
+
+        http_client = AsyncClient(base_url=f"http://127.0.0.1:{port}")
+        client_config = ClientConfig(
+            base_url=f"http://127.0.0.1:{port}",
+            heartbeat_interval_seconds=0.1,
+        )
+        client = CascadqClient(config=client_config, http_client=http_client)
+        try:
+            yield client, memory_store
+        finally:
+            await client.close()
+            server.should_exit = True
+            with suppress(asyncio.CancelledError):
+                await server_task
+            await broker.stop()
+
+    async def test_slow_finish_flush_heartbeats_keep_task_alive_over_loopback(
+        self,
+        loopback_slow_flush_client: tuple[CascadqClient, FaultInjectingStore],
+    ) -> None:
+        """Heartbeats should also survive a slow finish over real TCP."""
+        client, store = loopback_slow_flush_client
+        await client.create_queue("q")
+        await client.push("q", {"x": 1})
+
+        claimed = await client.claim("q")
+        assert claimed is not None
+
+        async with claimed:
+            store.inject_write_delay("queues/q.json", 0.8)
+
+        result = await client.claim("q", timeout_seconds=0)
+        assert result is None
+
+    async def test_very_slow_finish_with_large_payload_over_loopback(
+        self,
+        memory_store: FaultInjectingStore,
+    ) -> None:
+        """A long finish flush over real TCP should still receive heartbeats.
+
+        This is a closer local analogue to the large-payload stress run:
+        a bigger payload, real loopback HTTP, and a finish flush that is
+        much longer than the heartbeat timeout.
+        """
+        config = BrokerConfig(
+            heartbeat_timeout_seconds=2.0,
+            heartbeat_check_interval_seconds=0.3,
+            compaction_interval_seconds=100.0,
+            compress_snapshots=True,
+        )
+        broker = Broker(store=memory_store, config=config)
+        await broker.start()
+        app = create_app(store=memory_store, config=config, broker=broker)
+        app.state.broker = broker
+
+        port = _find_free_port()
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                log_level="warning",
+                lifespan="off",
+            )
+        )
+        server_task = asyncio.create_task(server.serve())
+        await _wait_for_loopback_server(port)
+
+        http_client = AsyncClient(base_url=f"http://127.0.0.1:{port}")
+        client = CascadqClient(
+            config=ClientConfig(
+                base_url=f"http://127.0.0.1:{port}",
+                heartbeat_interval_seconds=0.2,
+            ),
+            http_client=http_client,
+        )
+        try:
+            await client.create_queue("q")
+            await client.push("q", {"blob": "x" * (64 * 1024), "kind": "load"})
+
+            claimed = await client.claim("q")
+            assert claimed is not None
+
+            async with claimed:
+                memory_store.inject_write_delay("queues/q.json", 5.0)
+
+            result = await client.claim("q", timeout_seconds=0)
+            assert result is None
+        finally:
+            await client.close()
+            server.should_exit = True
+            with suppress(asyncio.CancelledError):
+                await server_task
+            await broker.stop()
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def _wait_for_loopback_server(port: int, timeout: float = 5.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    async with AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                await client.get("/healthz")
+                return
+            except Exception:
+                await asyncio.sleep(0.05)
+    raise TimeoutError(f"loopback server on port {port} did not start")
 
 
 class TestQueueDeletion:
