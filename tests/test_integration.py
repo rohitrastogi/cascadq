@@ -10,15 +10,16 @@ import uvicorn
 from httpx import ASGITransport, AsyncClient
 
 from cascadq.broker.broker import Broker
-from cascadq.client.client import CascadqClient
-from cascadq.config import BrokerConfig, ClientConfig
-from cascadq.errors import (
+from cascadq.config import BrokerConfig
+from cascadq.server.app import create_app
+from cascadq_client import (
     BrokerFencedError,
+    CascadqClient,
+    ClientConfig,
     FlushExhaustedError,
     PayloadValidationError,
     QueueNotFoundError,
 )
-from cascadq.server.app import create_app
 from tests.support import FaultInjectingStore
 
 

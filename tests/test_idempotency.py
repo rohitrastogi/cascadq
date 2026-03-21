@@ -11,9 +11,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from cascadq.broker.broker import Broker
-from cascadq.client.client import CascadqClient
-from cascadq.config import BrokerConfig, ClientConfig
+from cascadq.config import BrokerConfig
 from cascadq.server.app import create_app
+from cascadq_client import CascadqClient, ClientConfig
 from tests.support import FaultInjectingStore
 
 
