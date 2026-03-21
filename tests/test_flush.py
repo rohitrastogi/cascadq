@@ -6,13 +6,13 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from cascadq.broker.queue_flusher import QueueFlusher
-from cascadq.broker.queue_state import QueueState
+from cascadq.broker.flusher import Flusher
+from cascadq.broker.queue import TaskQueue
 from cascadq.errors import BrokerFencedError, FlushExhaustedError
-from cascadq.models import QueueFile, QueueMetadata, serialize_queue_file
+from cascadq.models import QueueMeta, Snapshot, serialize_snapshot
 from tests.support import FaultInjectingStore
 
-from .conftest import make_idempotency_key as _key
+from .conftest import make_key as _key
 
 
 async def _make_flusher(
@@ -22,17 +22,17 @@ async def _make_flusher(
     max_consecutive_failures: int = 3,
     retry_delay_seconds: float = 0.01,
     recovery_interval_seconds: float = 0.1,
-) -> QueueFlusher:
+) -> Flusher:
     """Create one queue flusher with a persisted backing object."""
-    queue_file = QueueFile(
-        metadata=QueueMetadata(created_at=1000.0, payload_schema={}),
+    queue_file = Snapshot(
+        metadata=QueueMeta(created_at=1000.0, payload_schema={}),
     )
     version = await store.write_new(
         f"queues/{name}.json",
-        serialize_queue_file(queue_file),
+        serialize_snapshot(queue_file),
     )
-    state = QueueState(name=name, queue_file=queue_file, version=version)
-    return QueueFlusher(
+    state = TaskQueue(name=name, queue_file=queue_file, version=version)
+    return Flusher(
         store=store,
         prefix="",
         state=state,
@@ -47,7 +47,7 @@ async def _running_flusher(
     store: FaultInjectingStore,
     name: str = "test",
     **kwargs: float | int,
-) -> AsyncGenerator[QueueFlusher]:
+) -> AsyncGenerator[Flusher]:
     """Create, start, yield, and stop a flusher."""
     flusher = await _make_flusher(store, name, **kwargs)  # type: ignore[arg-type]
     flusher.start()
@@ -57,12 +57,12 @@ async def _running_flusher(
         await flusher.stop()
 
 
-class TestQueueFlusher:
+class TestFlusher:
     async def test_flush_resolves_waiter(
         self, memory_store: FaultInjectingStore
     ) -> None:
         async with _running_flusher(memory_store) as flusher:
-            waiter = flusher.push("t1", {}, now=100.0, idempotency_key=_key())
+            waiter = flusher.push("t1", {}, now=100.0, push_key=_key())
 
             await asyncio.wait_for(waiter.wait(), timeout=2.0)
             data, _ = await memory_store.read("queues/test.json")
@@ -75,8 +75,8 @@ class TestQueueFlusher:
             _running_flusher(memory_store, "a") as flusher_a,
             _running_flusher(memory_store, "b") as flusher_b,
         ):
-            waiter_a = flusher_a.push("t1", {}, now=100.0, idempotency_key=_key())
-            waiter_b = flusher_b.push("t2", {}, now=100.0, idempotency_key=_key())
+            waiter_a = flusher_a.push("t1", {}, now=100.0, push_key=_key())
+            waiter_b = flusher_b.push("t2", {}, now=100.0, push_key=_key())
 
             memory_store.inject_conflict("queues/a.json")
 
@@ -95,7 +95,7 @@ class TestQueueFlusher:
         async with _running_flusher(
             memory_store, max_consecutive_failures=3,
         ) as flusher:
-            waiter = flusher.push("t1", {}, now=100.0, idempotency_key=_key())
+            waiter = flusher.push("t1", {}, now=100.0, push_key=_key())
             memory_store.inject_transient_error("queues/test.json", count=1)
 
             await asyncio.wait_for(waiter.wait(), timeout=5.0)
@@ -112,7 +112,7 @@ class TestQueueFlusher:
         async with _running_flusher(
             memory_store, max_consecutive_failures=2,
         ) as flusher:
-            waiter = flusher.push("t1", {}, now=100.0, idempotency_key=_key())
+            waiter = flusher.push("t1", {}, now=100.0, push_key=_key())
             memory_store.inject_transient_error("queues/test.json", count=2)
 
             with pytest.raises(FlushExhaustedError):
@@ -147,7 +147,7 @@ class TestQueueFlusher:
         async with _running_flusher(
             memory_store, max_consecutive_failures=2,
         ) as flusher:
-            waiter = flusher.push("t1", {}, now=100.0, idempotency_key=_key())
+            waiter = flusher.push("t1", {}, now=100.0, push_key=_key())
             memory_store.inject_transient_error("queues/test.json", count=2)
 
             with pytest.raises(FlushExhaustedError):

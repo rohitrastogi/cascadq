@@ -14,10 +14,10 @@ from cascadq.errors import (
     QueueEmptyError,
     QueueNotFoundError,
 )
-from cascadq.models import QueueFile, QueueMetadata, TaskStatus, serialize_queue_file
+from cascadq.models import QueueMeta, Snapshot, TaskStatus, serialize_snapshot
 from tests.support import FaultInjectingStore
 
-from .conftest import make_idempotency_key as _key
+from .conftest import make_key as _key
 
 
 async def _start_broker(
@@ -33,11 +33,11 @@ class TestBrokerLifecycle:
     async def test_start_discovers_existing_queues(
         self, memory_store: FaultInjectingStore, test_config: BrokerConfig
     ) -> None:
-        qf = QueueFile(
-            metadata=QueueMetadata(created_at=500.0, payload_schema={}),
+        qf = Snapshot(
+            metadata=QueueMeta(created_at=500.0, payload_schema={}),
         )
         await memory_store.write_new(
-            "queues/existing.json", serialize_queue_file(qf)
+            "queues/existing.json", serialize_snapshot(qf)
         )
 
         broker = Broker(

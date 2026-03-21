@@ -103,12 +103,12 @@ class TestPushClaimFinish:
 
         resp = await client.post(
             "/queues/q/push",
-            json={"payload": {"url": "http://a"}, "idempotency_key": "p1"},
+            json={"payload": {"url": "http://a"}, "push_key": "p1"},
         )
         assert resp.status_code == 204
 
         resp = await client.post(
-            "/queues/q/claim", json={"idempotency_key": "c1"}
+            "/queues/q/claim", json={"claim_key": "c1"}
         )
         assert resp.status_code == 200
         claim_data = resp.json()
@@ -131,14 +131,14 @@ class TestPushClaimFinish:
         await client.post("/queues", json={"name": "q"})
         resp = await client.post(
             "/queues/q/claim",
-            json={"idempotency_key": "c1", "timeout_seconds": 0},
+            json={"claim_key": "c1", "timeout_seconds": 0},
         )
         assert resp.status_code == 204
 
     async def test_push_to_nonexistent_queue(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/queues/nope/push",
-            json={"payload": {}, "idempotency_key": "p1"},
+            json={"payload": {}, "push_key": "p1"},
         )
         assert resp.status_code == 404
 
@@ -168,7 +168,7 @@ class TestPayloadValidation:
         )
         resp = await client.post(
             "/queues/q/push",
-            json={"payload": {"bad": 1}, "idempotency_key": "p1"},
+            json={"payload": {"bad": 1}, "push_key": "p1"},
         )
         assert resp.status_code == 422
 

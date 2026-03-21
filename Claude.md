@@ -4,18 +4,19 @@ CAScadq is an object-storage-backed task queue. Clients push tasks, claim them, 
 
 **Layers** (top to bottom):
 - `server/routes.py` — HTTP handlers, parse request, call broker, return response
-- `broker/broker.py` — orchestrator, maps queue names to flushers, exposes push/claim/heartbeat/finish. Never touches QueueState directly.
-- `broker/queue_flusher.py` — single point of contact per queue. All mutations go through it (push, claim, finish, heartbeat, activate_lease, compact, timeout_expired_claims). Each method delegates to QueueState and auto-notifies the flush loop — callers never call notify manually. Owns the flush loop, retry state, and three-state lifecycle: healthy → recovering (flush exhaustion, auto-reloads from durable state) → fenced (CAS conflict, terminal).
-- `broker/queue_state.py` — pure in-memory state: task lifecycle (pending → claimed → completed), write buffer, generation-based dirty tracking. No I/O, no flush scheduling.
+- `broker/broker.py` — orchestrator, maps queue names to flushers, exposes push/claim/heartbeat/finish. Never touches TaskQueue directly.
+- `broker/flusher.py` — single point of contact per queue. All mutations go through the `Flusher` (push, claim, finish, heartbeat, compact, requeue_expired). Each method delegates to TaskQueue and schedules a flush automatically. Owns the flush loop, retry state, and three-state lifecycle: healthy → recovering (flush exhaustion, auto-reloads from durable state) → fenced (CAS conflict, terminal).
+- `broker/flush_buffer.py` — flush coordination: FlushWaiter, FlushBatch, FlushBuffer. Owns write buffer, generation-based dirty tracking, and waiter lifecycle. TaskQueue is unaware of flush mechanics.
+- `broker/queue.py` — pure in-memory domain state: task lifecycle (pending → claimed → completed), idempotency, compaction. No I/O, no flush scheduling.
 - `storage/` — `ObjectStore` protocol with `S3ObjectStore` (production) and `InMemoryObjectStore` (tests). S3 backend supports hedged writes for tail latency.
 
-**Durability model**: mutations are applied to in-memory state via the flusher, which schedules a flush automatically. Mutations that block the caller (push, claim, finish) return a `FlushWaiter`. Fire-and-forget mutations (heartbeat, activate_lease) schedule a flush for crash recovery but don't block. If the broker crashes before a flush, unflushed mutations are lost — but no client was told they succeeded.
+**Durability model**: mutations are applied to in-memory state via the flusher, which schedules a flush automatically. Blocking mutations (push, finish) return a `FlushWaiter`; `claim` awaits the waiter internally and activates the lease before returning. Fire-and-forget mutations (heartbeat) schedule a flush for crash recovery but don't block. If the broker crashes before a flush, unflushed mutations are lost — but no client was told they succeeded.
 
-**Background workers** (call flusher methods, never touch QueueState directly):
-- `HeartbeatWorker` — calls `flusher.timeout_expired_claims()` on healthy queues
+**Background workers** (call flusher methods, never touch TaskQueue directly):
+- `LeaseChecker` — calls `flusher.requeue_expired()` on healthy queues
 - `CompactionWorker` — calls `flusher.compact()` on healthy queues
 
-**Lease lifecycle**: `Task.claim()` sets status to claimed but does NOT set `last_heartbeat`. The broker calls `flusher.activate_lease()` after the claim is durably flushed, which sets `last_heartbeat` and schedules a second flush. This prevents the heartbeat checker from re-queuing a task whose claim response hasn't reached the client yet. The activate_lease flush is needed for crash recovery — without it, durable state shows `last_heartbeat=None` and the task is never timed out.
+**Lease lifecycle**: `Task.claim()` sets status to claimed and sets `last_heartbeat` so the lease timestamp is durable in the same flush. The task is initially inactive (pending delivery) so the heartbeat checker skips it. After the claim flush succeeds, `claim` calls `activate_lease` to make the task eligible for heartbeat timeout.
 
 **Client** (`client/client.py`): `CascadqClient` with HTTP retry. `ClaimedTask` context manager sends heartbeats in the background until `finish()` is durably acknowledged. Heartbeats continue through the finish RPC so slow flushes don't cause re-queues.
 

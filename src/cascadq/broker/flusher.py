@@ -10,7 +10,8 @@ from enum import StrEnum
 
 from cascadq import metrics
 from cascadq.broker import queue_key
-from cascadq.broker.queue_state import ClaimResult, FlushWaiter, QueueState
+from cascadq.broker.flush_buffer import FlushBuffer, FlushWaiter
+from cascadq.broker.queue import TaskQueue
 from cascadq.errors import (
     BrokerFencedError,
     CascadqError,
@@ -18,9 +19,10 @@ from cascadq.errors import (
     FlushExhaustedError,
 )
 from cascadq.models import (
+    Task,
     TaskStatus,
-    deserialize_queue_file,
-    serialize_queue_file,
+    deserialize_snapshot,
+    serialize_snapshot,
 )
 from cascadq.storage.protocol import ObjectStore
 
@@ -33,12 +35,12 @@ class FlusherStatus(StrEnum):
     fenced = "fenced"
 
 
-class QueueFlusher:
+class Flusher:
     """Queue-local durability owner for a single queue.
 
-    All mutations go through this class so that ``_notify()`` is
-    called automatically.  Callers never need to remember to wake
-    the flush loop.
+    All mutations go through this class so that flushes are
+    scheduled automatically.  Callers never need to remember to
+    wake the flush loop.
 
     Three states:
       - **healthy**: serving requests, flush loop running.
@@ -53,11 +55,11 @@ class QueueFlusher:
         self,
         store: ObjectStore,
         prefix: str,
-        state: QueueState,
+        state: TaskQueue,
         max_consecutive_failures: int = 3,
         retry_delay_seconds: float = 1.0,
         recovery_interval_seconds: float = 5.0,
-        idempotency_ttl_seconds: float = 300.0,
+        push_key_ttl_seconds: float = 300.0,
     ) -> None:
         self._store = store
         self._prefix = prefix
@@ -65,11 +67,14 @@ class QueueFlusher:
         self._max_consecutive_failures = max_consecutive_failures
         self._retry_delay = retry_delay_seconds
         self._recovery_interval = recovery_interval_seconds
-        self._idempotency_ttl = idempotency_ttl_seconds
+        self._push_key_ttl = push_key_ttl_seconds
+
+        self._buffer = FlushBuffer()
+        self._claimable = asyncio.Event()
         self._consecutive_failures = 0
         self._status = FlusherStatus.healthy
         self._shutdown_error: CascadqError | None = None
-        self._task: asyncio.Task[None] | None = None
+        self._flush_task: asyncio.Task[None] | None = None
         self._recovery_task: asyncio.Task[None] | None = None
         self._flush_event = asyncio.Event()
 
@@ -99,17 +104,10 @@ class QueueFlusher:
     def shutdown_error(self) -> CascadqError | None:
         return self._shutdown_error
 
-    def ensure_healthy(self) -> None:
-        """Raise if the queue is not in healthy state."""
-        if self._status != FlusherStatus.healthy:
-            error = self._shutdown_error
-            assert error is not None
-            raise error
-
     # -- Lifecycle -------------------------------------------------------------
 
     def start(self) -> None:
-        self._task = asyncio.create_task(self._run())
+        self._flush_task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
         if self._recovery_task is not None:
@@ -119,103 +117,113 @@ class QueueFlusher:
             except asyncio.CancelledError:
                 pass
             self._recovery_task = None
-        if self._task is not None:
-            self._task.cancel()
+        if self._flush_task is not None:
+            self._flush_task.cancel()
             try:
-                await self._task
+                await self._flush_task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+            self._flush_task = None
 
-    # -- Mutation API (delegates to QueueState + auto-notifies) ----------------
+    # -- Mutation API (delegates to TaskQueue + auto-notifies) ----------------
 
     def push(
         self,
         task_id: str,
         payload: dict,
         now: float,
-        idempotency_key: str,
+        push_key: str,
     ) -> FlushWaiter:
         """Push a task and schedule a flush."""
-        waiter = self._state.push(task_id, payload, now, idempotency_key)
-        metrics.tasks_pushed_total.labels(queue=self.name).inc()
-        metrics.queue_pending_tasks.labels(queue=self.name).inc()
-        self._notify()
+        mutated = self._state.push(task_id, payload, now, push_key)
+        if mutated:
+            waiter = self._buffer.record_mutation()
+            metrics.tasks_pushed_total.labels(queue=self.name).inc()
+            metrics.queue_pending_tasks.labels(queue=self.name).inc()
+            self._signal_claimable()
+        else:
+            waiter = self._buffer.record_waiter()
+        self._schedule_flush()
         return waiter
 
-    def claim(self, now: float, idempotency_key: str) -> ClaimResult:
-        """Claim the next pending task and schedule a flush.
-
-        The lease timestamp is set immediately so it's durable in the
-        same flush.  The task is pending delivery until
-        ``confirm_delivery`` is called.
-        """
-        result = self._state.claim(now, idempotency_key)
+    async def claim(
+        self, now: float, claim_key: str,
+    ) -> Task:
+        """Claim a task, wait for flush, then activate the lease."""
+        result = self._state.claim(now, claim_key)
         if result.mutated:
+            waiter = self._buffer.record_mutation()
             metrics.tasks_claimed_total.labels(queue=self.name).inc()
             metrics.queue_dwell_seconds.labels(queue=self.name).observe(
                 now - result.task.created_at,
             )
             metrics.queue_pending_tasks.labels(queue=self.name).dec()
             metrics.queue_claimed_tasks.labels(queue=self.name).inc()
-        self._notify()
-        return result
-
-    def confirm_delivery(self, task_id: str) -> None:
-        """Mark a claim as delivered — makes it timeout-eligible."""
-        self._state.confirm_delivery(task_id)
+        else:
+            waiter = self._buffer.record_waiter()
+        self._schedule_flush()
+        await waiter.wait()
+        self._state.activate_lease(result.task.task_id)
+        return result.task
 
     def heartbeat(self, task_id: str, now: float) -> None:
         """Renew the heartbeat lease (fire-and-forget, no waiter)."""
         self._state.heartbeat(task_id, now)
-        self._notify()
+        self._buffer.mark_dirty()
+        self._schedule_flush()
 
     def finish(self, task_id: str, sequence: int) -> FlushWaiter:
         """Mark a task as completed and schedule a flush."""
-        result = self._state.finish(task_id, sequence)
-        if result.mutated:
+        mutated = self._state.finish(task_id, sequence)
+        if mutated:
+            waiter = self._buffer.record_mutation()
             metrics.queue_claimed_tasks.labels(queue=self.name).dec()
-        self._notify()
-        return result.waiter
-
-    async def wait_for_push(self, timeout: float | None) -> None:
-        """Block until a push or re-queue signals new pending work."""
-        await self._state.wait_for_push(timeout)
+        else:
+            waiter = self._buffer.record_waiter()
+        self._schedule_flush()
+        return waiter
 
     def compact(self, now: float) -> None:
-        """Remove completed tasks and expired idempotency keys."""
-        before_dirty = self._state.is_dirty
+        """Remove completed tasks and expired push keys."""
         removed = self._state.compact(now)
         if removed > 0:
             metrics.compaction_tasks_removed_total.labels(
                 queue=self.name,
             ).inc(removed)
-        if not before_dirty and self._state.is_dirty:
+            self._buffer.mark_dirty()
+            self._schedule_flush()
 
-            self._notify()
+    def ensure_healthy(self) -> None:
+        """Raise if the queue is not in healthy state."""
+        if self._status != FlusherStatus.healthy:
+            error = self._shutdown_error
+            assert error is not None
+            raise error
 
-    def timeout_expired_claims(
+    async def wait_claimable(self, timeout: float | None) -> None:
+        """Block until a push or re-queue signals new claimable work."""
+        self._claimable.clear()
+        await asyncio.wait_for(self._claimable.wait(), timeout)
+
+    def requeue_expired(
         self,
         now: float,
         timeout_seconds: float,
         next_task_id_fn: Callable[[], str],
     ) -> None:
         """Re-queue tasks whose heartbeat has expired."""
-        before_dirty = self._state.is_dirty
-        requeued = self._state.timeout_expired_claims(
+        requeued = self._state.requeue_expired(
             now, timeout_seconds, next_task_id_fn,
         )
         if requeued > 0:
             metrics.tasks_requeued_total.labels(queue=self.name).inc(requeued)
             metrics.queue_claimed_tasks.labels(queue=self.name).dec(requeued)
             metrics.queue_pending_tasks.labels(queue=self.name).inc(requeued)
-        if not before_dirty and self._state.is_dirty:
-            self._notify()
+            self._buffer.mark_dirty()
+            self._signal_claimable()
+            self._schedule_flush()
 
     # -- Flush loop ------------------------------------------------------------
-
-    def _notify(self) -> None:
-        self._flush_event.set()
 
     async def _run(self) -> None:
         while True:
@@ -223,24 +231,21 @@ class QueueFlusher:
             self._flush_event.clear()
             if self._status != FlusherStatus.healthy:
                 return
-            await self._flush_once()
+            await self._flush()
 
-    async def _flush_once(self) -> None:
-        """Flush one queue's current dirty generation and waiter buffer."""
+    async def _flush(self) -> None:
+        """Flush one queue's current dirty state and waiter buffer."""
         t_start = time.monotonic()
-        waiters = self._state.swap_write_buffer()
-        if not self._state.is_dirty and not waiters:
+        batch = self._buffer.begin_flush()
+        if not batch.is_dirty and not batch.waiters:
             return
 
-        if not self._state.is_dirty:
-            for waiter in waiters:
-                waiter.set_result()
+        if not batch.is_dirty:
+            self._buffer.complete_flush(batch)
             return
 
-        generation = self._state.generation
         version = self._state.version
-        data = serialize_queue_file(self._state.snapshot())
-
+        data = serialize_snapshot(self._state.snapshot())
         key = queue_key(self._prefix, self._state.name)
         name = self._state.name
         try:
@@ -248,16 +253,14 @@ class QueueFlusher:
             elapsed = time.monotonic() - t_start
             metrics.flush_duration_seconds.labels(queue=name).observe(elapsed)
             self._state.version = next_version
-            self._state.acknowledge_flush(generation)
+            self._buffer.complete_flush(batch)
             self._consecutive_failures = 0
-            for waiter in waiters:
-                waiter.set_result()
-            if elapsed > 0.5:
+            if elapsed > 1:
                 logger.info(
                     "Flush slow for queue %s: %d waiters, %.0fms",
-                    name, len(waiters), elapsed * 1000,
+                    name, len(batch.waiters), elapsed * 1000,
                 )
-            if self._state.is_dirty or self._state.has_pending_waiters:
+            if self._buffer.needs_flush:
                 self._flush_event.set()
         except ConflictError as exc:
             # A ConflictError means another broker wrote to this queue's
@@ -287,7 +290,7 @@ class QueueFlusher:
             )
             self._fence(
                 BrokerFencedError("queue has been fenced by another instance"),
-                waiters,
+                batch.waiters,
             )
         except Exception as exc:
             metrics.flush_errors_total.labels(queue=name, error="transient").inc()
@@ -299,7 +302,6 @@ class QueueFlusher:
                 self._max_consecutive_failures,
                 exc,
             )
-            self._state.prepend_waiters(waiters)
             if self._consecutive_failures >= self._max_consecutive_failures:
                 logger.error(
                     "Max consecutive flush failures reached for queue %s, "
@@ -310,9 +312,10 @@ class QueueFlusher:
                     FlushExhaustedError(
                         "flush retries exhausted, queue cannot persist state"
                     ),
-                    waiters,
+                    batch.waiters,
                 )
                 return
+            self._buffer.fail_flush(batch)
             await asyncio.sleep(self._retry_delay)
             self._flush_event.set()
 
@@ -342,9 +345,8 @@ class QueueFlusher:
         assert error is not None
         for waiter in in_flight_waiters:
             waiter.set_error(error)
-        for waiter in self._state.swap_write_buffer():
-            waiter.set_error(error)
-        self._state.wake_blocked_claims()
+        self._buffer.reject_all(error)
+        self._signal_claimable()
 
     # -- Background recovery ---------------------------------------------------
 
@@ -394,14 +396,16 @@ class QueueFlusher:
                 [],
             )
             return
-        queue_file = deserialize_queue_file(data)
-        new_state = QueueState(
+        queue_file = deserialize_snapshot(data)
+        new_state = TaskQueue(
             name=name,
             queue_file=queue_file,
             version=version,
-            idempotency_ttl_seconds=self._idempotency_ttl,
+            push_key_ttl_seconds=self._push_key_ttl,
         )
         self._state = new_state
+        self._buffer = FlushBuffer()
+        self._claimable.clear()
         self._status = FlusherStatus.healthy
         self._shutdown_error = None
         self._consecutive_failures = 0
@@ -419,3 +423,9 @@ class QueueFlusher:
         metrics.set_queue_status(name, self._status)
         metrics.recovery_events_total.labels(queue=name, outcome="succeeded").inc()
         logger.info("Queue %s recovered from flush exhaustion", name)
+
+    def _schedule_flush(self) -> None:
+        self._flush_event.set()
+
+    def _signal_claimable(self) -> None:
+        self._claimable.set()

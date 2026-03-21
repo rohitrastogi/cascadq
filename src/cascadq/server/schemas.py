@@ -14,11 +14,11 @@ class CreateQueueRequest(BaseModel):
 
 class PushRequest(BaseModel):
     payload: dict[str, Any]
-    idempotency_key: str
+    push_key: str
 
 
 class ClaimRequest(BaseModel):
-    idempotency_key: str
+    claim_key: str
     timeout_seconds: float | None = None
 
 
