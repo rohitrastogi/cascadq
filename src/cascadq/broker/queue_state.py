@@ -36,32 +36,6 @@ class ClaimResult:
     mutated: bool
 
 
-class FlushWaiter:
-    """A waiter that blocks a client request until the next successful flush.
-
-    The flush loop resolves it by calling set_result() or set_error().
-    Callers check the result via the event and error slot.
-    """
-
-    __slots__ = ("_error", "_event")
-
-    def __init__(self) -> None:
-        self._event = asyncio.Event()
-        self._error: Exception | None = None
-
-    def set_result(self) -> None:
-        self._event.set()
-
-    def set_error(self, error: Exception) -> None:
-        self._error = error
-        self._event.set()
-
-    async def wait(self) -> None:
-        await self._event.wait()
-        if self._error is not None:
-            raise self._error
-
-
 class QueueState:
     """Mutable in-memory state for a single queue.
 
@@ -91,9 +65,6 @@ class QueueState:
             if t.claim_idempotency_key
         }
         self.version = version
-        self._write_buffer: list[FlushWaiter] = []
-        self._generation = 0
-        self._flushed_generation = 0
         self._pending_heap: list[tuple[int, str]] = [
             (t.sequence, t.task_id)
             for t in queue_file.tasks
@@ -114,18 +85,6 @@ class QueueState:
     @property
     def metadata(self) -> QueueMetadata:
         return self._metadata
-
-    @property
-    def is_dirty(self) -> bool:
-        return self._generation != self._flushed_generation
-
-    @property
-    def has_pending_waiters(self) -> bool:
-        return len(self._write_buffer) > 0
-
-    @property
-    def generation(self) -> int:
-        return self._generation
 
     def push(
         self,
@@ -378,28 +337,6 @@ class QueueState:
             idempotency_keys=dict(self._idempotency_keys),
         )
 
-    def swap_write_buffer(self) -> list[FlushWaiter]:
-        """Swap the write buffer for double-buffering.
-
-        Returns the current buffer and replaces it with an empty one.
-        """
-        buffer = self._write_buffer
-        self._write_buffer = []
-        return buffer
-
-    def prepend_waiters(self, waiters: list[FlushWaiter]) -> None:
-        """Re-insert waiters at the front of the write buffer.
-
-        Used by the flush coordinator to keep waiters pending after a
-        transient flush failure so they are re-collected on the next cycle.
-        """
-        self._write_buffer = waiters + self._write_buffer
-
-    def acknowledge_flush(self, generation: int) -> None:
-        """Record that the given generation was durably written to storage."""
-        if generation > self._flushed_generation:
-            self._flushed_generation = generation
-
     def _pop_next_pending(self) -> Task | None:
         """Pop the lowest-sequence pending task from the heap.
 
@@ -421,10 +358,3 @@ class QueueState:
             )
         return task
 
-    def _append_waiter(self) -> FlushWaiter:
-        waiter = FlushWaiter()
-        self._write_buffer.append(waiter)
-        return waiter
-
-    def _mark_dirty(self) -> None:
-        self._generation += 1
