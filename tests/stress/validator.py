@@ -91,7 +91,13 @@ def _check_no_overlapping_claims(
     """For each logical_id, claim intervals must not overlap.
 
     A claim interval runs from ``claim_succeeded`` to the earlier of
-    ``finish_succeeded`` or ``consumer_abandoned_claim`` + heartbeat timeout.
+    ``finish_succeeded`` or ``consumer_abandoned_claim``.
+
+    We intentionally stop abandoned claims at the client-side abandon
+    event instead of adding ``heartbeat_timeout_seconds``. The server
+    starts lease timing before the claim response reaches the client,
+    so client-observed events cannot reconstruct the exact server-side
+    lease end for abandoned work without false overlap reports.
     """
     timeout = scenario.heartbeat_timeout_seconds
 
@@ -140,7 +146,7 @@ def _find_claim_end(
         if e.kind == EventKind.finish_succeeded:
             return e.timestamp
         if e.kind == EventKind.consumer_abandoned_claim:
-            return e.timestamp + timeout
+            return e.timestamp
     # No explicit end found — treat as abandoned with timeout
     return claim_event.timestamp + timeout
 
