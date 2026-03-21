@@ -40,8 +40,7 @@ def _make_client(config: dict) -> Any:
     """
     import httpx
 
-    from cascadq.client.client import CascadqClient
-    from cascadq.config import ClientConfig
+    from cascadq_client import CascadqClient, ClientConfig
 
     http_client = httpx.AsyncClient(
         base_url=config["base_url"],

@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.13"
 
+[manifest]
+members = [
+    "cascadq",
+    "cascadq-client",
+]
+
 [[package]]
 name = "aiobotocore"
 version = "3.3.0"
@@ -167,56 +173,57 @@ name = "cascadq"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "orjson" },
+    { name = "prometheus-client" },
     { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "jsonschema" },
-    { name = "orjson" },
-    { name = "prometheus-client" },
+    { name = "cascadq-client" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "pyyaml" },
     { name = "ruff" },
-    { name = "starlette" },
     { name = "ty" },
-    { name = "uvicorn" },
-    { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
 s3 = [
     { name = "aiobotocore" },
-]
-server = [
-    { name = "jsonschema" },
-    { name = "orjson" },
-    { name = "prometheus-client" },
-    { name = "pyyaml" },
-    { name = "starlette" },
-    { name = "uvicorn" },
-    { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiobotocore", marker = "extra == 's3'", specifier = ">=2.13" },
-    { name = "cascadq", extras = ["server"], marker = "extra == 'dev'" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "jsonschema", marker = "extra == 'server'", specifier = ">=4.20" },
-    { name = "orjson", marker = "extra == 'server'", specifier = ">=3.9" },
-    { name = "prometheus-client", marker = "extra == 'server'", specifier = ">=0.20" },
+    { name = "cascadq-client", marker = "extra == 'dev'", editable = "client" },
+    { name = "jsonschema", specifier = ">=4.20" },
+    { name = "orjson", specifier = ">=3.9" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "pyyaml", marker = "extra == 'server'", specifier = ">=6.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "starlette", marker = "extra == 'server'", specifier = ">=0.40" },
+    { name = "starlette", specifier = ">=0.40" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.24" },
-    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
-    { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'server'", specifier = ">=0.19" },
+    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.19" },
 ]
-provides-extras = ["server", "s3", "dev"]
+provides-extras = ["s3", "dev"]
+
+[[package]]
+name = "cascadq-client"
+version = "0.1.0"
+source = { editable = "client" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.27" }]
 
 [[package]]
 name = "certifi"

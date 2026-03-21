@@ -11,8 +11,8 @@ from uuid import uuid4
 
 import httpx
 
-from cascadq.config import ClientConfig
-from cascadq.errors import (
+from cascadq_client.config import ClientConfig
+from cascadq_client.errors import (
     BrokerFencedError,
     CascadqError,
     FlushExhaustedError,

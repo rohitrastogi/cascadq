@@ -106,8 +106,7 @@ Common status codes:
 ```python
 import asyncio
 
-from cascadq.client.client import CascadqClient
-from cascadq.config import ClientConfig
+from cascadq_client import CascadqClient, ClientConfig
 
 
 async def main() -> None:
@@ -131,28 +130,24 @@ asyncio.run(main())
 
 ## Installation
 
-Requires Python 3.13+.
+Requires Python 3.13+. The repo is a uv workspace with two packages:
+`cascadq` (server) and `cascadq-client` (client).
 
 ```bash
-uv pip install -e .
+uv sync --all-extras
 ```
 
-With S3 backend support:
+Run the broker:
 
 ```bash
-uv pip install -e ".[s3]"
-```
-
-With development dependencies:
-
-```bash
-uv pip install -e ".[dev]"
+uv run python -m cascadq                       # in-memory storage, default config
+uv run python -m cascadq --config config.yaml  # custom config
 ```
 
 ## Development
 
 ```bash
 uv run pytest
-uv run ruff check src/ tests/
-uv run ty check src/
+uv run ruff check src/ client/src/ tests/
+uv run ty check src/ client/src/
 ```
