@@ -107,24 +107,6 @@ class Broker:
             await flusher.stop()
         logger.info("Broker %s stopped", self._broker_id)
 
-    def _get_flusher(self, queue_name: str) -> QueueFlusher:
-        flusher = self._queue_flushers.get(queue_name)
-        if flusher is None:
-            raise QueueNotFoundError(f"queue {queue_name!r} not found")
-        flusher.ensure_healthy()
-        return flusher
-
-    def _make_flusher(self, state: QueueState) -> QueueFlusher:
-        return QueueFlusher(
-            store=self._store,
-            prefix=self._prefix,
-            state=state,
-            max_consecutive_failures=self._config.max_consecutive_flush_failures,
-            retry_delay_seconds=self._config.flush_retry_delay_seconds,
-            recovery_interval_seconds=self._config.flush_recovery_interval_seconds,
-            idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
-        )
-
     async def create_queue(
         self, name: str, payload_schema: dict | None = None
     ) -> None:
@@ -192,6 +174,9 @@ class Broker:
             if timeout_seconds is not None
             else None
         )
+        # Loop because multiple consumers may be long-polling the same
+        # queue.  A push wakes all of them, but only one wins the
+        # claim — the rest get QueueEmptyError and must wait again.
         while True:
             now = self._clock()
             try:
@@ -231,3 +216,21 @@ class Broker:
         flusher = self._get_flusher(queue_name)
         waiter = flusher.finish(task_id, sequence)
         await waiter.wait()
+
+    def _get_flusher(self, queue_name: str) -> QueueFlusher:
+        flusher = self._queue_flushers.get(queue_name)
+        if flusher is None:
+            raise QueueNotFoundError(f"queue {queue_name!r} not found")
+        flusher.ensure_healthy()
+        return flusher
+
+    def _make_flusher(self, state: QueueState) -> QueueFlusher:
+        return QueueFlusher(
+            store=self._store,
+            prefix=self._prefix,
+            state=state,
+            max_consecutive_failures=self._config.max_consecutive_flush_failures,
+            retry_delay_seconds=self._config.flush_retry_delay_seconds,
+            recovery_interval_seconds=self._config.flush_recovery_interval_seconds,
+            idempotency_ttl_seconds=self._config.idempotency_ttl_seconds,
+        )

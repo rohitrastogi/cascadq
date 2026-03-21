@@ -89,10 +89,8 @@ class TestClaimFinishLifecycle:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
         state.claim(now=200.0, idempotency_key=_key())
-        first = state.finish("t1", sequence=0)
-        assert first.mutated
-        replay = state.finish("t1", sequence=0)
-        assert not replay.mutated
+        assert state.finish("t1", sequence=0)
+        assert not state.finish("t1", sequence=0)
 
     def test_finish_after_compaction_is_idempotent(self) -> None:
         """Retry of a finish after the task was compacted away."""
@@ -262,9 +260,7 @@ class TestCompaction:
     def test_compact_noop_when_no_completed(self) -> None:
         state = _make_state()
         state.push("t1", {}, now=100.0, idempotency_key=_key())
-        state.acknowledge_flush(state.generation)
-        state.compact(now=200.0)
-        assert not state.is_dirty
+        assert state.compact(now=200.0) == 0
 
     def test_idempotency_key_ttl_cleanup(self) -> None:
         """Idempotency keys older than the TTL are removed during compaction."""
@@ -317,37 +313,3 @@ class TestSnapshot:
         # Re-queued task has min_seq - 1, so it sorts before t2 and t3
         assert snapshot.tasks[0].task_id == "t1r"
         assert snapshot.tasks[0].sequence < snapshot.tasks[1].sequence
-
-
-class TestGenerationDirtyTracking:
-    def test_acknowledge_flush_does_not_clear_concurrent_mutation(self) -> None:
-        """A mutation that arrives after the snapshot but before the write
-        completes must stay dirty.  acknowledge_flush(g) only advances
-        to generation g, so a newer generation g+1 remains dirty."""
-        state = _make_state()
-        state.push("t1", {}, now=100.0, idempotency_key=_key())
-        assert state.is_dirty
-
-        # Simulate flush: snapshot captures generation, then write begins
-        gen = state.generation
-        _ = state.snapshot()
-
-        # A new mutation arrives during the write
-        state.push("t2", {}, now=101.0, idempotency_key=_key())
-        assert state.generation == gen + 1
-
-        # Write completes — acknowledge only the snapshotted generation
-        state.acknowledge_flush(gen)
-
-        # The concurrent mutation must keep the queue dirty
-        assert state.is_dirty
-
-    def test_acknowledge_current_generation_clears_dirty(self) -> None:
-        """Acknowledging the current generation marks the queue clean."""
-        state = _make_state()
-        state.push("t1", {}, now=100.0, idempotency_key=_key())
-        state.push("t2", {}, now=101.0, idempotency_key=_key())
-        assert state.is_dirty
-
-        state.acknowledge_flush(state.generation)
-        assert not state.is_dirty

@@ -33,15 +33,6 @@ class ClaimResult:
     """Result of a claim operation."""
 
     task: Task
-    waiter: FlushWaiter
-    mutated: bool
-
-
-@dataclass(slots=True)
-class FinishResult:
-    """Result of a finish operation."""
-
-    waiter: FlushWaiter
     mutated: bool
 
 
@@ -124,20 +115,32 @@ class QueueState:
     def metadata(self) -> QueueMetadata:
         return self._metadata
 
+    @property
+    def is_dirty(self) -> bool:
+        return self._generation != self._flushed_generation
+
+    @property
+    def has_pending_waiters(self) -> bool:
+        return len(self._write_buffer) > 0
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
     def push(
         self,
         task_id: str,
         payload: dict,
         now: float,
         idempotency_key: str,
-    ) -> FlushWaiter:
+    ) -> bool:
         """Add a new task to the queue. Validates payload against schema.
 
-        If *idempotency_key* was already used, this is a no-op.
+        Returns True if a new task was created, False if idempotent replay.
         """
         existing = self._idempotency_keys.get(idempotency_key)
         if existing is not None:
-            return self._append_waiter()
+            return False
 
         if self._schema_validator is not None:
             try:
@@ -160,8 +163,7 @@ class QueueState:
         self._idempotency_keys[idempotency_key] = IdempotencyRecord(
             task_id=task_id, created_at=now,
         )
-        self._mark_dirty()
-        return self._append_waiter()
+        return True
 
     def claim(
         self, now: float, idempotency_key: str,
@@ -177,7 +179,7 @@ class QueueState:
         if existing_id is not None:
             task = self._tasks.get(existing_id)
             if task is not None and task.status == TaskStatus.claimed:
-                return ClaimResult(task, self._append_waiter(), False)
+                return ClaimResult(task, False)
             del self._claim_key_index[idempotency_key]
 
         task = self._pop_next_pending()
@@ -187,8 +189,7 @@ class QueueState:
         self._tasks[claimed.task_id] = claimed
         self._claim_key_index[idempotency_key] = claimed.task_id
         self._pending_delivery.add(claimed.task_id)
-        self._mark_dirty()
-        return ClaimResult(claimed, self._append_waiter(), True)
+        return ClaimResult(claimed, True)
 
     def confirm_delivery(self, task_id: str) -> None:
         """Mark a claim as delivered to the client (in-memory only).
@@ -212,34 +213,33 @@ class QueueState:
                 f"task {task_id!r} is not claimed (status={task.status.value})"
             )
         self._tasks[task_id] = task.heartbeat(now)
-        self._mark_dirty()
 
     def finish(
         self,
         task_id: str,
         sequence: int,
-    ) -> FinishResult:
+    ) -> bool:
         """Mark a claimed task as completed.
 
-        Idempotent: finishing an already-completed task or a task that
-        has been compacted away (sequence <= watermark) is a no-op.
+        Returns True if the task was newly completed, False if idempotent
+        replay.  Finishing a task compacted away (sequence <= watermark)
+        is also a no-op.
         """
         task = self._tasks.get(task_id)
         if task is None:
             if sequence <= self._compacted_through_sequence:
-                return FinishResult(self._append_waiter(), False)
+                return False
             raise TaskNotFoundError(
                 f"task {task_id!r} not found in queue {self.name!r}"
             )
         if task.status == TaskStatus.completed:
-            return FinishResult(self._append_waiter(), False)
+            return False
         if task.status != TaskStatus.claimed:
             raise TaskNotClaimedError(
                 f"task {task_id!r} is not claimed (status={task.status.value})"
             )
         self._tasks[task_id] = task.finish()
-        self._mark_dirty()
-        return FinishResult(self._append_waiter(), True)
+        return True
 
     def timeout_expired_claims(
         self, now: float, timeout_seconds: float, next_task_id_fn: Callable[[], str]
@@ -295,7 +295,6 @@ class QueueState:
             next_seq -= 1
         self._sorted_task_ids = None
         self._push_event.set()
-        self._mark_dirty()
         return len(expired)
 
     async def wait_for_push(self, timeout: float | None) -> None:
@@ -311,7 +310,7 @@ class QueueState:
     def wake_blocked_claims(self) -> None:
         """Wake any claim() calls blocked on wait_for_push().
 
-        Called by the flush coordinator on fencing so that blocked
+        Called by the queue flusher on fencing so that blocked
         claims promptly see the shutdown error instead of hanging.
         """
         self._push_event.set()
@@ -358,7 +357,6 @@ class QueueState:
             len(completed),
             self.name,
         )
-        self._mark_dirty()
         return len(completed)
 
     def snapshot(self) -> QueueFile:
@@ -380,10 +378,6 @@ class QueueState:
             idempotency_keys=dict(self._idempotency_keys),
         )
 
-    @property
-    def generation(self) -> int:
-        return self._generation
-
     def swap_write_buffer(self) -> list[FlushWaiter]:
         """Swap the write buffer for double-buffering.
 
@@ -400,14 +394,6 @@ class QueueState:
         transient flush failure so they are re-collected on the next cycle.
         """
         self._write_buffer = waiters + self._write_buffer
-
-    @property
-    def is_dirty(self) -> bool:
-        return self._generation != self._flushed_generation
-
-    @property
-    def has_pending_waiters(self) -> bool:
-        return len(self._write_buffer) > 0
 
     def acknowledge_flush(self, generation: int) -> None:
         """Record that the given generation was durably written to storage."""
