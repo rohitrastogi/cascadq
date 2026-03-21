@@ -68,8 +68,6 @@ async def hedged_write(
             ) from None
         except ConflictError:
             raise first_conflict from None
-        except BaseException:
-            raise
     except BaseException as first_error:
         other = next(iter(pending))
         try:

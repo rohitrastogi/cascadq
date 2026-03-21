@@ -14,6 +14,12 @@ class TaskStatus(StrEnum):
     completed = "completed"
 
 
+class FlusherStatus(StrEnum):
+    healthy = "healthy"
+    recovering = "recovering"
+    fenced = "fenced"
+
+
 @dataclass(slots=True)
 class Task:
     """Mutable in-memory task representation.

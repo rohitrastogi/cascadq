@@ -1,17 +1,11 @@
 """End-to-end integration tests: client → HTTP server → broker → FaultInjectingStore."""
 
 import asyncio
-import socket
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 
 import pytest
 import uvicorn
-from httpx import ASGITransport, AsyncClient
-
-from cascadq.broker.broker import Broker
-from cascadq.config import BrokerConfig
-from cascadq.server.app import create_app
 from cascadq_client import (
     BrokerFencedError,
     CascadqClient,
@@ -20,7 +14,12 @@ from cascadq_client import (
     PayloadValidationError,
     QueueNotFoundError,
 )
-from tests.support import FaultInjectingStore
+from httpx import ASGITransport, AsyncClient
+
+from cascadq.broker.broker import Broker
+from cascadq.config import BrokerConfig
+from cascadq.server.app import create_app
+from tests.support import FaultInjectingStore, find_free_port
 
 
 @pytest.fixture
@@ -36,7 +35,6 @@ async def client(
     broker = Broker(store=memory_store, config=config)
     await broker.start()
     app = create_app(store=memory_store, config=config, broker=broker)
-    app.state.broker = broker
     transport = ASGITransport(app=app)
     http_client = AsyncClient(transport=transport, base_url="http://test")
     client_config = ClientConfig(
@@ -146,7 +144,7 @@ class TestBrokerFencing:
         broker = Broker(store=memory_store, config=config)
         await broker.start()
         app = create_app(store=memory_store, config=config, broker=broker)
-        app.state.broker = broker
+
         transport = ASGITransport(app=app)
         http_client = AsyncClient(transport=transport, base_url="http://test")
         client_config = ClientConfig(
@@ -220,7 +218,7 @@ class TestSlowFlushResilience:
         broker = Broker(store=memory_store, config=config)
         await broker.start()
         app = create_app(store=memory_store, config=config, broker=broker)
-        app.state.broker = broker
+
         transport = ASGITransport(app=app)
         http_client = AsyncClient(transport=transport, base_url="http://test")
         client_config = ClientConfig(
@@ -351,9 +349,8 @@ class TestSlowFlushResilience:
         broker = Broker(store=memory_store, config=config)
         await broker.start()
         app = create_app(store=memory_store, config=config, broker=broker)
-        app.state.broker = broker
 
-        port = _find_free_port()
+        port = find_free_port()
         server = uvicorn.Server(
             uvicorn.Config(
                 app,
@@ -413,12 +410,6 @@ class TestQueueDeletion:
 
         with pytest.raises(QueueNotFoundError):
             await client.claim("ephemeral")
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 async def _wait_for_loopback_server(port: int, timeout: float = 5.0) -> None:

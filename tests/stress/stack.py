@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import socket
 import subprocess
 import sys
 from collections.abc import AsyncGenerator
@@ -16,6 +15,8 @@ from tempfile import mkstemp
 
 import httpx
 import yaml
+
+from tests.support import find_free_port
 
 from .config import ScenarioConfig
 
@@ -43,7 +44,7 @@ async def stress_stack(
     R2/S3 credentials are read from the environment by the server
     process.
     """
-    port = _find_free_port()
+    port = find_free_port()
     base_url = f"http://127.0.0.1:{port}"
 
     server_log_fd, server_log_path = mkstemp(suffix=".server.log")
@@ -83,12 +84,6 @@ async def stress_stack(
         server_log_fh.close()
         config_path.unlink(missing_ok=True)
         logger.info("Server on port %d stopped", port)
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def _write_server_config(
@@ -137,7 +132,7 @@ async def _wait_for_server(
     async with httpx.AsyncClient() as client:
         while asyncio.get_running_loop().time() < deadline:
             try:
-                await client.get(f"{base_url}/")
+                await client.get(f"{base_url}/healthz")
                 return
             except httpx.ConnectError:
                 await asyncio.sleep(0.1)

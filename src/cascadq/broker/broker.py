@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from time import time
@@ -21,10 +22,10 @@ from cascadq.errors import (
     QueueNotFoundError,
 )
 from cascadq.models import (
+    FlusherStatus,
     QueueMeta,
     Snapshot,
     Task,
-    TaskStatus,
     deserialize_snapshot,
     serialize_snapshot,
 )
@@ -54,6 +55,11 @@ class Broker:
         self._flushers: dict[str, Flusher] = {}
         self._compaction: CompactionWorker | None = None
         self._lease_checker: LeaseChecker | None = None
+        self._started = False
+
+    @property
+    def is_started(self) -> bool:
+        return self._started
 
     @property
     def is_fenced(self) -> bool:
@@ -62,22 +68,20 @@ class Broker:
     async def start(self) -> None:
         """Start the broker: discover queues, start background tasks."""
         keys = await self._store.list_prefix(f"{self._prefix}queues/")
-        for key in keys:
+        reads = [self._store.read(key) for key in keys]
+        results = await asyncio.gather(*reads)
+        for key, (data, version) in zip(keys, results, strict=True):
             name = key.removeprefix(f"{self._prefix}queues/").removesuffix(
                 ".json"
             )
-            data, version = await self._store.read(key)
             qf = deserialize_snapshot(data)
             state = TaskQueue(
                 name=name, queue_file=qf, version=version,
                 push_key_ttl_seconds=self._config.push_key_ttl_seconds,
             )
             self._flushers[name] = self._make_flusher(state)
-            pending = sum(1 for t in qf.tasks if t.status == TaskStatus.pending)
-            claimed = sum(1 for t in qf.tasks if t.status == TaskStatus.claimed)
-            metrics.queue_pending_tasks.labels(queue=name).set(pending)
-            metrics.queue_claimed_tasks.labels(queue=name).set(claimed)
-            metrics.set_queue_status(name, "healthy")
+            metrics.reset_queue_gauges(name, qf)
+            metrics.set_queue_status(name, FlusherStatus.healthy)
             logger.info("Discovered queue %s with %d tasks", name, len(qf.tasks))
 
         self._compaction = CompactionWorker(
@@ -95,10 +99,12 @@ class Broker:
             flusher.start()
         self._compaction.start()
         self._lease_checker.start()
+        self._started = True
         logger.info("Broker %s started", self._broker_id)
 
     async def stop(self) -> None:
         """Stop all background tasks."""
+        self._started = False
         if self._lease_checker:
             await self._lease_checker.stop()
         if self._compaction:

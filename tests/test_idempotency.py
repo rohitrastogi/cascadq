@@ -8,12 +8,12 @@ from collections.abc import AsyncGenerator
 
 import httpx
 import pytest
+from cascadq_client import CascadqClient, ClientConfig
 from httpx import ASGITransport, AsyncClient
 
 from cascadq.broker.broker import Broker
 from cascadq.config import BrokerConfig
 from cascadq.server.app import create_app
-from cascadq_client import CascadqClient, ClientConfig
 from tests.support import FaultInjectingStore
 
 
@@ -37,7 +37,7 @@ async def stack(
     broker = Broker(store=memory_store, config=config)
     await broker.start()
     app = create_app(store=memory_store, config=config, broker=broker)
-    app.state.broker = broker
+
     transport = ASGITransport(app=app)
     http_client = AsyncClient(
         transport=transport,

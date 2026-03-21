@@ -21,8 +21,6 @@ async def client(
     broker = Broker(store=memory_store, config=test_config)
     await broker.start()
     app = create_app(store=memory_store, config=test_config, broker=broker)
-    # Set broker on state since ASGITransport doesn't trigger lifespan
-    app.state.broker = broker
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -51,6 +49,30 @@ class TestHealthProbes:
             assert resp.status_code == 503
             assert resp.json()["code"] == "not_ready"
 
+    async def test_readyz_returns_503_when_broker_not_started(
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig,
+    ) -> None:
+        broker = Broker(store=memory_store, config=test_config)
+        app = create_app(store=memory_store, config=test_config, broker=broker)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/readyz")
+            assert resp.status_code == 503
+            assert resp.json()["code"] == "not_ready"
+
+    async def test_readyz_returns_503_after_broker_stopped(
+        self, memory_store: FaultInjectingStore, test_config: BrokerConfig,
+    ) -> None:
+        broker = Broker(store=memory_store, config=test_config)
+        await broker.start()
+        app = create_app(store=memory_store, config=test_config, broker=broker)
+        await broker.stop()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/readyz")
+            assert resp.status_code == 503
+            assert resp.json()["code"] == "not_ready"
+
     async def test_readyz_returns_503_when_broker_fenced(
         self, memory_store: FaultInjectingStore, test_config: BrokerConfig,
     ) -> None:
@@ -59,7 +81,7 @@ class TestHealthProbes:
         await broker.create_queue("q")
 
         app = create_app(store=memory_store, config=test_config, broker=broker)
-        app.state.broker = broker
+
         transport = ASGITransport(app=app)
 
         async with AsyncClient(transport=transport, base_url="http://test") as c:

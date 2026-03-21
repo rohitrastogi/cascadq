@@ -4,17 +4,17 @@ import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
-from cascadq.broker.broker import Broker
-from cascadq.config import BrokerConfig
-from cascadq.server.app import create_app
 from cascadq_client import (
     CascadqClient,
     ClientConfig,
     QueueAlreadyExistsError,
     QueueNotFoundError,
 )
+from httpx import ASGITransport, AsyncClient
+
+from cascadq.broker.broker import Broker
+from cascadq.config import BrokerConfig
+from cascadq.server.app import create_app
 from tests.support import FaultInjectingStore
 
 
@@ -27,7 +27,7 @@ async def server_client(
     broker = Broker(store=memory_store, config=test_config)
     await broker.start()
     app = create_app(store=memory_store, config=test_config, broker=broker)
-    app.state.broker = broker
+
     transport = ASGITransport(app=app)
     http_client = AsyncClient(transport=transport, base_url="http://test")
     client_config = ClientConfig(
@@ -129,7 +129,7 @@ class TestDomainErrors:
         broker = Broker(store=memory_store, config=config)
         await broker.start()
         app = create_app(store=memory_store, config=config, broker=broker)
-        app.state.broker = broker
+
         transport = ASGITransport(app=app)
         http_client = AsyncClient(transport=transport, base_url="http://test")
         client_config = ClientConfig(

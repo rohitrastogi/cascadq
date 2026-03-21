@@ -10,9 +10,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from cascadq_client import CascadqClient, ClientConfig
 
 from cascadq.models import TaskStatus, deserialize_snapshot
-from cascadq_client import CascadqClient, ClientConfig
 
 from .config import ConsumerBehavior, QueueSpec, ScenarioConfig
 from .events import EventKind, EventRecorder
