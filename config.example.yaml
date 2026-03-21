@@ -35,4 +35,4 @@ broker:
   max_consecutive_flush_failures: 3
   flush_retry_delay_seconds: 1.0
   flush_recovery_interval_seconds: 5.0
-  idempotency_ttl_seconds: 300.0
+  push_key_ttl_seconds: 300.0

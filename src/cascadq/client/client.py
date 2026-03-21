@@ -94,7 +94,7 @@ class CascadqClient:
             f"/queues/{queue_name}/push",
             json={
                 "payload": payload,
-                "idempotency_key": uuid4().hex,
+                "push_key": uuid4().hex,
             },
             expected_status=204,
         )
@@ -117,8 +117,8 @@ class CascadqClient:
             QueueNotFoundError: Queue does not exist.
             BrokerFencedError: Broker is fenced (after retries).
         """
-        idempotency_key = uuid4().hex
-        body: dict[str, Any] = {"idempotency_key": idempotency_key}
+        claim_key = uuid4().hex
+        body: dict[str, Any] = {"claim_key": claim_key}
         if timeout_seconds is not None:
             body["timeout_seconds"] = timeout_seconds
         resp = await self._request(

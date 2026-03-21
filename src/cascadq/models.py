@@ -18,8 +18,8 @@ class TaskStatus(StrEnum):
 class Task:
     """Mutable in-memory task representation.
 
-    Mutation methods modify the instance in-place and return self
-    so callers can use the same assignment pattern as before.
+    Mutation methods modify the instance in-place. TaskQueue owns
+    all Task instances and mutates them directly.
     """
 
     task_id: str
@@ -28,58 +28,55 @@ class Task:
     status: TaskStatus
     payload: dict
     last_heartbeat: float | None = None
-    claim_idempotency_key: str = ""
+    claim_key: str = ""
 
-    def claim(self, now: float, claim_idempotency_key: str) -> Task:
+    def claim(self, now: float, claim_key: str) -> None:
         self.status = TaskStatus.claimed
         self.last_heartbeat = now
-        self.claim_idempotency_key = claim_idempotency_key
-        return self
+        self.claim_key = claim_key
 
-    def heartbeat(self, now: float) -> Task:
+    def heartbeat(self, now: float) -> None:
         self.last_heartbeat = now
-        return self
 
-    def finish(self) -> Task:
+    def finish(self) -> None:
         self.status = TaskStatus.completed
-        return self
 
 
 @dataclass(frozen=True)
-class QueueMetadata:
+class QueueMeta:
     created_at: float
     payload_schema: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class IdempotencyRecord:
-    """Durable record of a push idempotency key and its creation time."""
+class PushRecord:
+    """Durable record of a push key and its creation time."""
 
     task_id: str
     created_at: float
 
 
 @dataclass(frozen=True)
-class QueueFile:
-    metadata: QueueMetadata
+class Snapshot:
+    metadata: QueueMeta
     next_sequence: int = 0
-    compacted_through_sequence: int = -1
+    compaction_watermark: int = -1
     tasks: list[Task] = field(default_factory=list)
-    idempotency_keys: dict[str, IdempotencyRecord] = field(default_factory=dict)
+    push_keys: dict[str, PushRecord] = field(default_factory=dict)
 
 
-def serialize_queue_file(qf: QueueFile) -> bytes:
-    """Serialize a QueueFile to JSON bytes."""
+def serialize_snapshot(qf: Snapshot) -> bytes:
+    """Serialize a Snapshot to JSON bytes."""
     data = {
         "metadata": {
             "created_at": qf.metadata.created_at,
             "payload_schema": qf.metadata.payload_schema,
         },
         "next_sequence": qf.next_sequence,
-        "compacted_through_sequence": qf.compacted_through_sequence,
-        "idempotency_keys": {
+        "compaction_watermark": qf.compaction_watermark,
+        "push_keys": {
             k: {"task_id": r.task_id, "created_at": r.created_at}
-            for k, r in qf.idempotency_keys.items()
+            for k, r in qf.push_keys.items()
         },
         "tasks": [
             {
@@ -89,7 +86,7 @@ def serialize_queue_file(qf: QueueFile) -> bytes:
                 "status": t.status.value,
                 "payload": t.payload,
                 "last_heartbeat": t.last_heartbeat,
-                "claim_idempotency_key": t.claim_idempotency_key,
+                "claim_key": t.claim_key,
             }
             for t in qf.tasks
         ],
@@ -97,8 +94,8 @@ def serialize_queue_file(qf: QueueFile) -> bytes:
     return orjson.dumps(data)
 
 
-def deserialize_queue_file(raw: bytes) -> QueueFile:
-    """Deserialize JSON bytes into a QueueFile."""
+def deserialize_snapshot(raw: bytes) -> Snapshot:
+    """Deserialize JSON bytes into a Snapshot."""
     data = orjson.loads(raw)
     meta = data["metadata"]
     tasks = [
@@ -109,20 +106,20 @@ def deserialize_queue_file(raw: bytes) -> QueueFile:
             status=TaskStatus(t["status"]),
             payload=t["payload"],
             last_heartbeat=t.get("last_heartbeat"),
-            claim_idempotency_key=t.get("claim_idempotency_key", ""),
+            claim_key=t.get("claim_key", ""),
         )
         for t in data["tasks"]
     ]
-    return QueueFile(
-        metadata=QueueMetadata(
+    return Snapshot(
+        metadata=QueueMeta(
             created_at=meta["created_at"],
             payload_schema=meta.get("payload_schema", {}),
         ),
         next_sequence=data["next_sequence"],
-        compacted_through_sequence=data.get("compacted_through_sequence", -1),
+        compaction_watermark=data.get("compaction_watermark", -1),
         tasks=tasks,
-        idempotency_keys={
-            k: IdempotencyRecord(task_id=v["task_id"], created_at=v["created_at"])
-            for k, v in data.get("idempotency_keys", {}).items()
+        push_keys={
+            k: PushRecord(task_id=v["task_id"], created_at=v["created_at"])
+            for k, v in data.get("push_keys", {}).items()
         },
     )

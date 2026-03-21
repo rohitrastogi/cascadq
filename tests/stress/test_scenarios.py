@@ -13,7 +13,7 @@ import pytest
 
 from cascadq.client.client import CascadqClient
 from cascadq.config import ClientConfig
-from cascadq.models import TaskStatus, deserialize_queue_file
+from cascadq.models import TaskStatus, deserialize_snapshot
 
 from .config import ConsumerBehavior, QueueSpec, ScenarioConfig
 from .events import EventKind, EventRecorder
@@ -75,7 +75,7 @@ async def _wait_for_compaction(
     completed: list[object] = []
     while True:
         data, _ = await store.read(key)
-        queue_file = deserialize_queue_file(data)
+        queue_file = deserialize_snapshot(data)
         completed = [
             task for task in queue_file.tasks
             if task.status == TaskStatus.completed

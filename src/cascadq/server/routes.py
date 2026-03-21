@@ -114,7 +114,7 @@ async def push(request: Request) -> Response:
     t0 = time.monotonic()
     try:
         broker = _get_broker(request)
-        await broker.push(name, body.payload, body.idempotency_key)
+        await broker.push(name, body.payload, body.push_key)
         return Response(status_code=204)
     except CascadqError as e:
         return _error_response(e)
@@ -134,7 +134,7 @@ async def claim(request: Request) -> Response:
     try:
         broker = _get_broker(request)
         task = await broker.claim(
-            name, body.idempotency_key, body.timeout_seconds,
+            name, body.claim_key, body.timeout_seconds,
         )
         return JSONResponse(
             {

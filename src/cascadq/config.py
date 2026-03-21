@@ -46,7 +46,7 @@ class BrokerTuningConfig(BaseModel, frozen=True, extra="forbid"):
     max_consecutive_flush_failures: int = 3
     flush_retry_delay_seconds: float = 1.0
     flush_recovery_interval_seconds: float = 5.0
-    idempotency_ttl_seconds: float = 300.0
+    push_key_ttl_seconds: float = 300.0
 
 
 class ServerConfig(BaseModel, frozen=True, extra="forbid"):
@@ -95,7 +95,7 @@ class BrokerConfig:
     max_consecutive_flush_failures: int = 3
     flush_retry_delay_seconds: float = 1.0
     flush_recovery_interval_seconds: float = 5.0
-    idempotency_ttl_seconds: float = 300.0
+    push_key_ttl_seconds: float = 300.0
     storage_prefix: str = ""
 
 
