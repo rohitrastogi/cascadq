@@ -3,27 +3,20 @@
 CAScadq is an object-storage-backed task queue. Clients push tasks, claim them, send heartbeats while processing, and finish them. All durable state lives in S3-compatible object storage as JSON files (one per queue), updated via CAS (conditional writes with ETags).
 
 **Layers** (top to bottom):
-- `server/routes.py` — HTTP handlers, parse request, call broker, return response
-- `broker/broker.py` — orchestrator, maps queue names to flushers, exposes push/claim/heartbeat/finish. Never touches TaskQueue directly.
-- `broker/flusher.py` — single point of contact per queue. All mutations go through the `Flusher` (push, claim, finish, heartbeat, compact, requeue_expired). Each method delegates to TaskQueue and schedules a flush automatically. Owns the flush loop, retry state, and three-state lifecycle: healthy → recovering (flush exhaustion, auto-reloads from durable state) → fenced (CAS conflict, terminal).
-- `broker/flush_buffer.py` — flush coordination: FlushWaiter, FlushBatch, FlushBuffer. Owns write buffer, generation-based dirty tracking, and waiter lifecycle. TaskQueue is unaware of flush mechanics.
-- `broker/queue.py` — pure in-memory domain state: task lifecycle (pending → claimed → completed), idempotency, compaction. No I/O, no flush scheduling.
-- `storage/` — `ObjectStore` protocol with `S3ObjectStore` (production) and `InMemoryObjectStore` (tests). S3 backend supports hedged writes for tail latency.
+- `server/` — HTTP handlers and Starlette app factory
+- `broker/broker.py` — orchestrator: maps queue names to flushers, exposes push/claim/heartbeat/finish
+- `broker/flusher.py` — per-queue durability owner: flush loop, retry, three-state lifecycle (healthy → recovering → fenced)
+- `broker/flush_buffer.py` — flush coordination: write buffer, generation-based dirty tracking, waiter lifecycle
+- `broker/queue.py` — pure in-memory domain state: task lifecycle, idempotency, compaction. No I/O
+- `broker/heartbeat.py`, `broker/compaction.py` — background workers that call flusher methods on healthy queues
+- `storage/` — `ObjectStore` protocol with S3 and in-memory backends. S3 backend supports hedged writes
+- `client/` — `CascadqClient` with HTTP retry; `ClaimedTask` context manager sends heartbeats until finish is acknowledged
 
-**Durability model**: mutations are applied to in-memory state via the flusher, which schedules a flush automatically. Blocking mutations (push, finish) return a `FlushWaiter`; `claim` awaits the waiter internally and activates the lease before returning. Fire-and-forget mutations (heartbeat) schedule a flush for crash recovery but don't block. If the broker crashes before a flush, unflushed mutations are lost — but no client was told they succeeded.
-
-**Background workers** (call flusher methods, never touch TaskQueue directly):
-- `LeaseChecker` — calls `flusher.requeue_expired()` on healthy queues
-- `CompactionWorker` — calls `flusher.compact()` on healthy queues
-
-**Lease lifecycle**: `Task.claim()` sets status to claimed and sets `last_heartbeat` so the lease timestamp is durable in the same flush. The task is initially inactive (pending delivery) so the heartbeat checker skips it. After the claim flush succeeds, `claim` calls `activate_lease` to make the task eligible for heartbeat timeout.
-
-**Client** (`client/client.py`): `CascadqClient` with HTTP retry. `ClaimedTask` context manager sends heartbeats in the background until `finish()` is durably acknowledged. Heartbeats continue through the finish RPC so slow flushes don't cause re-queues.
-
-**Key invariants**:
-- Generation-based dirty tracking: `acknowledge_flush(g)` only advances to generation `g`, so mutations arriving during a slow S3 write are not silently dropped.
-- Per-queue isolation: each queue has its own flush loop, retry counter, and fencing state. A slow or failing queue does not affect others.
-- Recovery version check: when reloading from durable state after flush exhaustion, the flusher verifies the ETag matches the last known version. A mismatch means another broker wrote → fence instead of recovering.
+**Key design decisions**:
+- All mutations flow through the flusher so flush scheduling is automatic. Blocking mutations (push, finish) return a `FlushWaiter`; heartbeat is fire-and-forget.
+- Claimed tasks are inactive until the claim flush commits, so the heartbeat checker doesn't race against in-flight claims.
+- Per-queue isolation: each queue has its own flush loop, retry counter, and fencing state.
+- Recovery after flush exhaustion verifies the durable ETag hasn't changed; a mismatch fences instead of silently adopting foreign state.
 
 ### Readability
 - Optimize for code that is easy to review, not clever.
