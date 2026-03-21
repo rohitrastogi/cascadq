@@ -1,4 +1,4 @@
-"""Background heartbeat timeout detection."""
+"""Background lease timeout detection."""
 
 from __future__ import annotations
 
@@ -6,20 +6,20 @@ import asyncio
 from collections.abc import Callable
 from uuid import uuid4
 
-from cascadq.broker.queue_flusher import QueueFlusher
+from cascadq.broker.flusher import Flusher
 
 
-class HeartbeatWorker:
-    """Periodically scans for expired claims and re-queues them."""
+class LeaseChecker:
+    """Periodically scans for expired leases and re-queues them."""
 
     def __init__(
         self,
-        queue_flushers: dict[str, QueueFlusher],
+        flushers: dict[str, Flusher],
         timeout_seconds: float,
         check_interval_seconds: float,
         clock: Callable[[], float],
     ) -> None:
-        self._queue_flushers = queue_flushers
+        self._flushers = flushers
         self._timeout = timeout_seconds
         self._interval = check_interval_seconds
         self._clock = clock
@@ -41,10 +41,10 @@ class HeartbeatWorker:
         while True:
             await asyncio.sleep(self._interval)
             now = self._clock()
-            for flusher in self._queue_flushers.values():
+            for flusher in self._flushers.values():
                 if not flusher.is_healthy:
                     continue
-                flusher.timeout_expired_claims(
+                flusher.requeue_expired(
                     now=now,
                     timeout_seconds=self._timeout,
                     next_task_id_fn=lambda: uuid4().hex,

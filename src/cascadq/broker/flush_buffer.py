@@ -44,7 +44,7 @@ class FlushBatch:
 class FlushBuffer:
     """Coordinates flush lifecycle: write buffer, generation tracking, waiters.
 
-    Separates flush coordination from domain state so that QueueState
+    Separates flush coordination from domain state so that TaskQueue
     can be pure domain logic.
     """
 

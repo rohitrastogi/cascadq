@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from time import time
 
-from cascadq.broker.queue_flusher import QueueFlusher
+from cascadq.broker.flusher import Flusher
 
 
 class CompactionWorker:
@@ -14,11 +14,11 @@ class CompactionWorker:
 
     def __init__(
         self,
-        queue_flushers: dict[str, QueueFlusher],
+        flushers: dict[str, Flusher],
         interval_seconds: float,
         clock: Callable[[], float] = time,
     ) -> None:
-        self._queue_flushers = queue_flushers
+        self._flushers = flushers
         self._interval = interval_seconds
         self._clock = clock
         self._task: asyncio.Task[None] | None = None
@@ -39,7 +39,7 @@ class CompactionWorker:
         while True:
             await asyncio.sleep(self._interval)
             now = self._clock()
-            for flusher in self._queue_flushers.values():
+            for flusher in self._flushers.values():
                 if not flusher.is_healthy:
                     continue
                 flusher.compact(now)
