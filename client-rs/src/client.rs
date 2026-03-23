@@ -208,26 +208,23 @@ impl CascadqClient {
 
         let heartbeat_url = format!("{}/queues/{queue_name}/heartbeat", self.config.base_url);
         let heartbeat_interval = Duration::from_secs_f64(self.config.heartbeat_interval_seconds);
-        let task_id = data.task_id.clone();
+        let finish_url = format!("{}/queues/{queue_name}/finish", self.config.base_url);
         let http = self.http.clone();
 
         let heartbeat_handle = tokio::spawn(heartbeat_loop(
-            http,
+            http.clone(),
             heartbeat_url,
-            task_id,
+            data.task_id.clone(),
             heartbeat_interval,
         ));
-
-        let finish_url = format!("{}/queues/{queue_name}/finish", self.config.base_url);
 
         Ok(Some(ClaimedTask {
             task_id: data.task_id,
             sequence: data.sequence,
             payload: data.payload,
-            http: self.http.clone(),
+            http,
             finish_url,
             heartbeat_handle: Some(heartbeat_handle),
-            finished: false,
         }))
     }
 
@@ -314,28 +311,36 @@ impl Default for CascadqClient {
 /// heartbeats. If dropped without finishing, heartbeats are cancelled
 /// and the server will eventually requeue the task via lease expiry.
 pub struct ClaimedTask {
-    pub task_id: String,
-    pub sequence: u64,
-    pub payload: Value,
+    task_id: String,
+    sequence: u64,
+    payload: Value,
     http: reqwest::Client,
     finish_url: String,
     heartbeat_handle: Option<JoinHandle<()>>,
-    finished: bool,
 }
 
 impl ClaimedTask {
+    /// Returns the task identifier.
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    /// Returns the task's sequence number.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the task payload.
+    pub fn payload(&self) -> &Value {
+        &self.payload
+    }
+
     /// Marks the task as completed.
     ///
     /// Sends the finish request to the broker, then stops heartbeats.
     /// Consumes `self` so the task cannot be used after finishing.
     pub async fn finish(mut self) -> Result<()> {
-        self.finish_inner().await
-    }
-
-    async fn finish_inner(&mut self) -> Result<()> {
-        if self.finished {
-            return Ok(());
-        }
+        self.stop_heartbeat();
 
         let body = FinishRequest {
             task_id: self.task_id.clone(),
@@ -345,8 +350,6 @@ impl ClaimedTask {
 
         let status = resp.status();
         if status == StatusCode::NO_CONTENT {
-            self.finished = true;
-            self.stop_heartbeat();
             return Ok(());
         }
 
@@ -371,14 +374,25 @@ impl Drop for ClaimedTask {
 // Background heartbeat loop
 // ---------------------------------------------------------------------------
 
+/// Pre-serializes the heartbeat body once and reuses it across iterations
+/// to avoid cloning the task_id string on every heartbeat.
 async fn heartbeat_loop(http: reqwest::Client, url: String, task_id: String, interval: Duration) {
+    let body = serde_json::to_vec(&HeartbeatRequest {
+        task_id: task_id.clone(),
+    })
+    .expect("HeartbeatRequest serialization cannot fail");
+
     loop {
         tokio::time::sleep(interval).await;
 
-        let body = HeartbeatRequest {
-            task_id: task_id.clone(),
-        };
-        match http.post(&url).json(&body).send().await {
+        let result = http
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.clone())
+            .send()
+            .await;
+
+        match result {
             Ok(resp) if resp.status() == StatusCode::NO_CONTENT => {}
             Ok(resp) => {
                 let status = resp.status().as_u16();
