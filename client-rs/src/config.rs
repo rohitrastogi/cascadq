@@ -6,6 +6,8 @@ pub struct ClientConfig {
     pub max_retries: u32,
     pub retry_base_delay_seconds: f64,
     pub retry_max_delay_seconds: f64,
+    /// Per-request timeout in seconds. Prevents hanging on unresponsive servers.
+    pub request_timeout_seconds: f64,
 }
 
 impl Default for ClientConfig {
@@ -16,6 +18,7 @@ impl Default for ClientConfig {
             max_retries: 3,
             retry_base_delay_seconds: 0.5,
             retry_max_delay_seconds: 30.0,
+            request_timeout_seconds: 30.0,
         }
     }
 }
